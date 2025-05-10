@@ -1,144 +1,156 @@
 #!/usr/bin/env python
 # -*- coding: utf-8 -*-
 
+"""
+Windows平台打包脚本
+使用PyInstaller将Python脚本打包为Windows可执行文件
+"""
+
 import os
+import shutil
+import argparse
 import subprocess
 import sys
-import shutil
-import tempfile
+import zipfile
+from pathlib import Path
 
-def main():
-    # 确保已安装PyInstaller
-    try:
-        import PyInstaller
-    except ImportError:
-        print("正在安装PyInstaller...")
-        subprocess.check_call([sys.executable, "-m", "pip", "install", "pyinstaller"])
-        
-    # 确保已安装依赖
-    print("正在安装项目依赖...")
-    subprocess.check_call([sys.executable, "-m", "pip", "install", "-r", "requirements.txt"])
+def build_windows_executable(spec_file=None, one_file=False, debug=False):
+    print(f"开始构建Windows可执行文件...")
     
-    # 应用图标路径 - 使用相对路径
-    icon_path = "1.ico"
+    # 确定spec文件
+    if not spec_file:
+        spec_file = "ScrcpyGUI.spec"
     
-    # 确保图标存在
-    if not os.path.exists(icon_path) or os.path.getsize(icon_path) < 100:
-        print(f"没有找到有效的图标文件 {icon_path}")
-        try:
-            print("尝试生成图标...")
-            import create_icon
-            create_icon.create_simple_icon(icon_path)
-        except:
-            print("无法生成图标，将使用默认图标")
+    if not os.path.exists(spec_file):
+        print(f"错误: 指定的spec文件 '{spec_file}' 不存在")
+        return False
     
-    # 确认图标状态
-    if os.path.exists(icon_path) and os.path.getsize(icon_path) > 0:
-        print(f"使用图标：{icon_path} (大小: {os.path.getsize(icon_path)} 字节)")
+    # 构建命令
+    cmd = ["pyinstaller", "--clean"]
+    
+    # 检查是否使用spec文件
+    if spec_file.endswith('.spec'):
+        # 使用spec文件时，不需要其他选项
+        cmd.append(spec_file)
     else:
-        print("警告: 找不到有效的图标文件，将使用默认图标")
-        icon_path = None
-    
-    # 检查必要的文件是否存在
-    add_data_args = []
-    
-    if os.path.exists("settings_example.json"):
-        add_data_args.append("--add-data=settings_example.json;.")
-    else:
-        print("警告: settings_example.json 文件不存在，打包时将不包含此文件")
-    
-    if os.path.exists("scrcpy_config.json"):
-        add_data_args.append("--add-data=scrcpy_config.json;.")
-    else:
-        print("警告: scrcpy_config.json 文件不存在，打包时将不包含此文件")
-    
-    # 使用spec文件进行打包，这样更可靠
-    if os.path.exists("ScrcpyGUI.spec"):
-        print("找到.spec文件，将使用它进行打包")
-        # 使用.spec文件进行打包
-        pyinstaller_cmd = [
-            "pyinstaller",
-            "--clean",
-            "--noconfirm",
-            "ScrcpyGUI.spec"
-        ]
-    else:
-        # 直接使用命令行参数
-        pyinstaller_cmd = [
-            "pyinstaller",
-            "--name=ScrcpyGUI",
-            "--onefile",  # 打包成单个可执行文件
-            "--noconsole",  # 不显示控制台窗口
-            "--clean",
-            "--noconfirm",
-            "--hidden-import=argparse",  # 添加argparse作为隐藏导入
-        ]
-        
-        # 添加图标参数
-        if icon_path:
-            pyinstaller_cmd.append(f"--icon={icon_path}")
-        
-        # 添加数据文件参数
-        pyinstaller_cmd.extend(add_data_args)
-        
-        # 添加主脚本
-        pyinstaller_cmd.append("main.py")
+        # 如果不是spec文件，则添加其他选项
+        if one_file:
+            cmd.append("--onefile")
+        else:
+            cmd.append("--onedir")
+            
+        if debug:
+            cmd.append("--debug=all")
+            
+        # 添加scrcpy相关文件
+        scrcpy_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "scrcpy-win64-v3.2")
+        if os.path.exists(scrcpy_dir):
+            print(f"添加scrcpy目录: {scrcpy_dir}")
+            cmd.append("--add-data")
+            if sys.platform == "win32":
+                cmd.append(f"{scrcpy_dir};scrcpy-win64-v3.2")
+            else:
+                cmd.append(f"{scrcpy_dir}:scrcpy-win64-v3.2")
+        else:
+            print(f"警告: 未找到scrcpy目录: {scrcpy_dir}")
+            
+        cmd.append(spec_file)
     
     # 执行打包命令
-    print("正在打包应用程序...")
-    print(f"执行命令: {' '.join(pyinstaller_cmd)}")
     try:
-        subprocess.check_call(pyinstaller_cmd)
-    except subprocess.CalledProcessError as e:
-        print(f"打包失败: {e}")
-        print("请检查是否安装了PyInstaller最新版本，可以使用以下命令更新:")
-        print("  pip install --upgrade pyinstaller")
-        return
-    
-    # 如果打包成功，检查可执行文件
-    dist_dir = os.path.abspath("dist")
-    exe_path = os.path.join(dist_dir, "ScrcpyGUI.exe")
-    
-    if os.path.exists(exe_path):
-        print(f"\n打包完成！可执行文件位于 {exe_path} (大小: {os.path.getsize(exe_path)/1024/1024:.2f} MB)")
+        print(f"执行命令: {' '.join(cmd)}")
+        result = subprocess.run(cmd)
         
-        # 复制批处理文件到dist目录
-        batch_file = "启动应用管理器.bat"
-        if os.path.exists(batch_file):
-            try:
-                shutil.copy2(batch_file, os.path.join(dist_dir, batch_file))
-                print(f"已复制 {batch_file} 到 {dist_dir}")
-            except Exception as e:
-                print(f"复制批处理文件失败: {e}")
+        if result.returncode != 0:
+            print("构建失败，退出码:", result.returncode)
+            return False
+        
+        print("构建成功!")
+        
+        # 打印可执行文件路径
+        if one_file:
+            exe_path = os.path.abspath("dist/ScrcpyGUI.exe")
+            if os.path.exists(exe_path):
+                file_size = os.path.getsize(exe_path) / (1024 * 1024)
+                print(f"可执行文件已生成: {exe_path} ({file_size:.2f} MB)")
+            else:
+                print(f"警告: 未找到生成的可执行文件: {exe_path}")
         else:
-            # 如果批处理文件不存在，则创建它
-            with open(os.path.join(dist_dir, batch_file), 'w', encoding='gbk') as f:
-                f.write('@echo off\necho 正在启动应用管理器...\n')
-                f.write('"%~dp0ScrcpyGUI.exe" --app-manager\n')
-                f.write('if errorlevel 1 (\n    echo 启动失败，错误代码: %errorlevel%\n    pause\n)')
-            print(f"已创建批处理文件 {os.path.join(dist_dir, batch_file)}")
+            dist_dir = os.path.abspath("dist/ScrcpyGUI")
+            if os.path.exists(dist_dir):
+                print(f"程序目录已生成: {dist_dir}")
+            else:
+                print(f"警告: 未找到生成的程序目录: {dist_dir}")
         
-        # 清理图标文件如果存在
-        dist_icon_path = os.path.join(dist_dir, icon_path)
-        if os.path.exists(dist_icon_path):
-            try:
-                os.remove(dist_icon_path)
-                print(f"已清理图标文件 {dist_icon_path}")
-            except Exception as e:
-                print(f"清理图标文件失败: {e}")
-                
-        # 清理快捷方式如果存在
-        shortcut_path = os.path.join(dist_dir, "ScrcpyGUI.lnk")
-        if os.path.exists(shortcut_path):
-            try:
-                os.remove(shortcut_path)
-                print(f"已清理快捷方式 {shortcut_path}")
-            except Exception as e:
-                print(f"清理快捷方式失败: {e}")
-    else:
-        print("\n警告: 可执行文件未创建!")
+        return True
+    except Exception as e:
+        print(f"构建过程中出现错误: {e}")
+        return False
+
+def create_zip_archive(archive_name=None):
+    """创建分发用的ZIP压缩包"""
+    dist_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'dist')
     
-    print("\n请确保在运行程序的计算机上已安装ADB和scrcpy，且已添加到系统PATH中。")
+    if not os.path.exists(dist_dir):
+        print(f"错误: 没有找到打包后的dist目录")
+        return False
+    
+    if not archive_name:
+        archive_name = "ScrcpyGUI"
+    
+    # 如果没有扩展名，添加.zip
+    if not archive_name.endswith('.zip'):
+        archive_name += '.zip'
+    
+    # 确定压缩包路径
+    zip_path = os.path.join(dist_dir, archive_name)
+    
+    try:
+        executable_dir = os.path.join(dist_dir, 'ScrcpyGUI')
+        if os.path.exists(executable_dir):
+            # 创建压缩包
+            with zipfile.ZipFile(zip_path, 'w', zipfile.ZIP_DEFLATED) as zipf:
+                for root, dirs, files in os.walk(executable_dir):
+                    for file in files:
+                        file_path = os.path.join(root, file)
+                        # 计算相对路径，作为压缩包内的路径
+                        rel_path = os.path.relpath(file_path, executable_dir)
+                        zipf.write(file_path, rel_path)
+            
+            print(f"成功创建压缩包: {zip_path}")
+            return True
+        else:
+            print(f"错误: 找不到可执行文件目录: {executable_dir}")
+            return False
+    except Exception as e:
+        print(f"创建压缩包时出错: {e}")
+        return False
+
+def main():
+    parser = argparse.ArgumentParser(description="Windows平台打包脚本")
+    parser.add_argument("--spec", help="指定spec文件路径", default="ScrcpyGUI.spec")
+    parser.add_argument("--onefile", action="store_true", help="打包为单个文件")
+    parser.add_argument("--debug", action="store_true", help="启用调试模式")
+    parser.add_argument("--zip", action="store_true", help="创建ZIP归档")
+    parser.add_argument("--zip-name", help="ZIP归档名称")
+    
+    args = parser.parse_args()
+    
+    # 构建可执行文件
+    if build_windows_executable(args.spec, args.onefile, args.debug):
+        print("构建完成!")
+        
+        # 如果需要创建ZIP归档
+        if args.zip:
+            if create_zip_archive(args.zip_name):
+                print("ZIP归档创建成功!")
+            else:
+                print("ZIP归档创建失败!")
+    else:
+        print("构建失败!")
+        return 1
+    
+    return 0
 
 if __name__ == "__main__":
-    main()
+    sys.exit(main())

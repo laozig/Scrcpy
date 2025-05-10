@@ -1,25 +1,34 @@
 # -*- mode: python ; coding: utf-8 -*-
 
+block_cipher = None
 
 a = Analysis(
     ['main.py'],
     pathex=[],
     binaries=[],
-    datas=[('settings_example.json', '.'), ('scrcpy_config.json', '.')],
-    hiddenimports=['argparse'],
+    datas=[
+        # 移除scrcpy-win64-v3.2的引用
+        ('README.md', '.'),
+        ('CHANGE_LOG.md', '.'),
+    ],
+    hiddenimports=[],
     hookspath=[],
     hooksconfig={},
     runtime_hooks=[],
     excludes=[],
+    win_no_prefer_redirects=False,
+    win_private_assemblies=False,
+    cipher=block_cipher,
     noarchive=False,
-    optimize=0,
 )
-pyz = PYZ(a.pure)
+
+pyz = PYZ(a.pure, a.zipped_data, cipher=block_cipher)
 
 exe = EXE(
     pyz,
     a.scripts,
     a.binaries,
+    a.zipfiles,
     a.datas,
     [],
     name='ScrcpyGUI',
@@ -35,5 +44,5 @@ exe = EXE(
     target_arch=None,
     codesign_identity=None,
     entitlements_file=None,
-    icon=['D:\\Subline\\code\\py\\Scrcpy\\1.ico'],
-)
+    icon='1.ico',
+) 

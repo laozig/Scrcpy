@@ -23,7 +23,8 @@ wheels/
 *.egg
 *.manifest
 *.spec
-!ScrcpyGUI.spec
+!ScrcpyGUI_separate.spec
+!ScrcpyGUI_onefile_separate.spec
 
 # Python虚拟环境
 .venv/
@@ -64,7 +65,6 @@ $RECYCLE.BIN/
 logs/
 
 # 配置文件和敏感信息
-scrcpy_config.json
 settings.json
 .env
 *.ini
@@ -100,5 +100,6 @@ node_modules/
 *.tar.gz
 
 # 项目特有忽略
-*.bat
-!启动应用管理器.bat 
+# 保留运行bat
+!run.bat
+!start.bat 

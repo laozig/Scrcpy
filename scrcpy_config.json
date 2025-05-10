@@ -1,20 +1,20 @@
 {
-  "selected_device": "",
+  "selected_device": "7de316a2",
   "resolution": "1280:720",
-  "bit_rate": "8M",
+  "bit_rate": "12M",
   "max_fps": "60",
   "record": false,
   "record_path": "",
   "fullscreen": false,
   "no_control": false,
   "disable_clipboard": false,
-  "window_title": "Scrcpy GUI",
-  "always_on_top": false,
-  "device_id": "",
+  "window_title": "老资格",
+  "always_on_top": true,
+  "device_id": "7de316a2",
   "max_resolution": "1920",
   "language": "zh_CN",
   "auto_filename": true,
   "last_ip": "",
   "last_port": "5555",
   "custom_params": ""
-} 
+}
