@@ -23,8 +23,7 @@ wheels/
 *.egg
 *.manifest
 *.spec
-ScrcpyGUI*.spec
-build_*.py
+!ScrcpyGUI.spec
 
 # Python虚拟环境
 .venv/
@@ -43,6 +42,7 @@ icon_debug/
 *.old
 *.swp
 *~
+*_fixed.py
 
 # IDE和编辑器文件
 .idea/
@@ -75,14 +75,8 @@ screenshot_*.png
 record_*.mp4
 record_*.mkv
 
-# 图标文件（如果需要包含特定图标请删除）
-# *.ico
-# *.bmp
-# *.png
-
 # PyInstaller 生成的文件
 *.manifest
-*.spec
 .pyo
 .pyd
 

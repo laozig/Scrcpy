@@ -7,13 +7,13 @@ from PyQt5.QtWidgets import (
     QApplication, QDialog, QVBoxLayout, QHBoxLayout, QWidget, 
     QPushButton, QLabel, QListWidget, QListWidgetItem, QComboBox,
     QMessageBox, QGridLayout, QGroupBox, QLineEdit, QProgressBar,
-    QSplitter, QTabWidget, QTextEdit
+    QSplitter, QTabWidget, QTextEdit, QCheckBox
 )
 from PyQt5.QtCore import Qt, QThread, pyqtSignal, QTimer, QSize
 from PyQt5.QtGui import QIcon, QPixmap, QFont
 
 """
-简化版应用管理器，用于管理和操作Android设备上的应用程序。
+应用管理器，用于管理和操作Android设备上的应用程序。
 
 功能：
 1. 获取并显示已安装的应用列表
@@ -201,11 +201,12 @@ class AppListThread(QThread):
                 os.rmdir(temp_dir)
             except:
                 pass
-                
+            
             return icon_data
         except Exception as e:
-            print(f"生成默认图标错误: {e}")
+            print(f"创建应用图标出错: {e}")
             return None
+                    
 
 class AppActionThread(QThread):
     """执行应用操作的后台线程"""
@@ -220,207 +221,257 @@ class AppActionThread(QThread):
         
     def run(self):
         # 根据操作类型执行不同的命令
-        if self.action == "start":
-            cmd = f"shell monkey -p {self.package_name} -c android.intent.category.LAUNCHER 1"
-        elif self.action == "stop":
-            cmd = f"shell am force-stop {self.package_name}"
-        elif self.action == "uninstall":
-            cmd = f"uninstall {self.package_name}"
-        else:
-            self.action_result.emit(False, f"未知操作: {self.action}")
-            return
+        try:
+            if self.action == "start":
+                # 启动应用，使用monkey命令
+                cmd = f"shell monkey -p {self.package_name} -c android.intent.category.LAUNCHER 1"
+                result = self.controller.execute_adb_command(cmd, self.device_id)
+                if result[0]:
+                    self.action_result.emit(True, f"已启动应用 {self.package_name}")
+                else:
+                    self.action_result.emit(False, f"启动应用失败: {result[1]}")
+                
+            elif self.action == "stop":
+                # 停止应用，使用force-stop命令
+                cmd = f"shell am force-stop {self.package_name}"
+                result = self.controller.execute_adb_command(cmd, self.device_id)
+                if result[0]:
+                    self.action_result.emit(True, f"已停止应用 {self.package_name}")
+                else:
+                    self.action_result.emit(False, f"停止应用失败: {result[1]}")
             
-        # 执行命令
-        result = self.controller.execute_adb_command(cmd, self.device_id)
-        
-        # 处理结果
-        if result[0]:
-            self.action_result.emit(True, f"成功{self.action}应用: {self.package_name}")
-        else:
-            self.action_result.emit(False, f"执行{self.action}失败: {result[1]}")
+            elif self.action == "uninstall":
+                # 卸载应用
+                cmd = f"uninstall {self.package_name}"
+                result = self.controller.execute_adb_command(cmd, self.device_id)
+                if result[0]:
+                    self.action_result.emit(True, f"已卸载应用 {self.package_name}")
+                else:
+                    self.action_result.emit(False, f"卸载应用失败: {result[1]}")
+                    
+        except Exception as e:
+            self.action_result.emit(False, f"操作执行错误: {str(e)}")
+
 
 class AppManagerDialog(QDialog):
+    """应用管理器对话框"""
     def __init__(self, parent, controller):
         super().__init__(parent)
         self.controller = controller
-        self.parent = parent
-        self.app_icons = {}  # 存储应用图标的字典: 包名 -> 图标数据
+        self.selected_device = None
+        self.selected_package = None
+        self.app_icons = {}  # 保存应用图标缓存
+        self.app_list = []  # 保存应用列表
         
-        # 初始化界面
+        self.setWindowTitle("应用管理器")
+        self.resize(800, 600)
+        
         self.setup_ui()
         
-        # 获取设备列表
+        # 刷新设备列表
         self.refresh_devices()
         
     def setup_ui(self):
-        self.setWindowTitle("应用管理器")
-        self.resize(800, 600)  # 增大窗口尺寸
-        
-        # 主布局
-        layout = QVBoxLayout(self)
-        layout.setSpacing(10)
-        layout.setContentsMargins(15, 15, 15, 15)
+        """设置UI组件"""
+        # 创建主布局
+        main_layout = QVBoxLayout(self)
         
         # 设备选择区域
         device_group = QGroupBox("设备选择")
         device_layout = QHBoxLayout(device_group)
         
-        self.device_label = QLabel("设备:")
+        device_layout.addWidget(QLabel("设备:"))
         self.device_combo = QComboBox()
-        self.device_combo.setMinimumWidth(250)
+        self.device_combo.setMinimumWidth(300)
         self.device_combo.currentIndexChanged.connect(self.on_device_changed)
-        
-        refresh_btn = QPushButton("刷新设备")
-        refresh_btn.clicked.connect(self.refresh_devices)
-        
-        device_layout.addWidget(self.device_label)
         device_layout.addWidget(self.device_combo, 1)
-        device_layout.addWidget(refresh_btn)
         
-        # 创建标签页
-        self.tab_widget = QTabWidget()
+        self.refresh_btn = QPushButton("刷新设备")
+        self.refresh_btn.clicked.connect(self.refresh_devices)
+        device_layout.addWidget(self.refresh_btn)
         
-        # 应用列表页面
-        app_tab = QWidget()
-        app_layout = QVBoxLayout(app_tab)
+        main_layout.addWidget(device_group)
         
-        # 搜索过滤
+        # 创建应用列表和详情的分割面板
+        splitter = QSplitter(Qt.Horizontal)
+        splitter.setChildrenCollapsible(False)
+        
+        # 应用列表区域
+        app_list_group = QGroupBox("已安装应用")
+        app_list_layout = QVBoxLayout(app_list_group)
+        
+        # 添加过滤和选项
         filter_layout = QHBoxLayout()
+        filter_layout.addWidget(QLabel("搜索:"))
         self.filter_input = QLineEdit()
-        self.filter_input.setPlaceholderText("搜索应用...")
+        self.filter_input.setPlaceholderText("输入关键字筛选应用")
         self.filter_input.textChanged.connect(self.filter_apps)
-        
-        filter_layout.addWidget(QLabel("筛选:"))
         filter_layout.addWidget(self.filter_input, 1)
         
-        # 显示系统应用选项
-        self.show_system_check = QComboBox()
-        self.show_system_check.addItems(["仅用户应用", "所有应用"])
-        self.show_system_check.currentIndexChanged.connect(self.reload_apps)
+        self.show_system_cb = QCheckBox("显示系统应用")
+        self.show_system_cb.setChecked(False)
+        self.show_system_cb.stateChanged.connect(self.reload_apps)
+        filter_layout.addWidget(self.show_system_cb)
         
-        filter_layout.addWidget(self.show_system_check)
-        
-        # 刷新应用列表按钮
-        refresh_apps_btn = QPushButton("刷新应用")
-        refresh_apps_btn.clicked.connect(self.reload_apps)
-        filter_layout.addWidget(refresh_apps_btn)
-        
-        app_layout.addLayout(filter_layout)
+        app_list_layout.addLayout(filter_layout)
         
         # 应用列表
-        self.app_list = QListWidget()
-        self.app_list.setIconSize(QSize(36, 36))  # 设置图标大小
-        self.app_list.itemSelectionChanged.connect(self.on_app_selected)
-        app_layout.addWidget(self.app_list)
+        self.app_list_widget = QListWidget()
+        self.app_list_widget.setIconSize(QSize(48, 48))
+        self.app_list_widget.currentItemChanged.connect(self.on_app_selected)
+        app_list_layout.addWidget(self.app_list_widget, 1)
         
-        # 加载进度条
+        # 添加加载进度条
         self.progress_bar = QProgressBar()
+        self.progress_bar.setRange(0, 100)
+        self.progress_bar.setValue(0)
         self.progress_bar.setVisible(False)
-        app_layout.addWidget(self.progress_bar)
+        app_list_layout.addWidget(self.progress_bar)
         
-        # 应用操作按钮区域
+        # 操作按钮区域
         action_layout = QHBoxLayout()
         
-        self.start_btn = QPushButton("启动应用")
-        self.start_btn.setEnabled(False)
+        self.start_btn = QPushButton("启动")
         self.start_btn.clicked.connect(lambda: self.perform_app_action("start"))
-        
-        self.stop_btn = QPushButton("停止应用")
-        self.stop_btn.setEnabled(False)
-        self.stop_btn.clicked.connect(lambda: self.perform_app_action("stop"))
-        
-        self.uninstall_btn = QPushButton("卸载应用")
-        self.uninstall_btn.setEnabled(False)
-        self.uninstall_btn.clicked.connect(lambda: self.perform_app_action("uninstall"))
-        
-        # 添加更多功能按钮
-        self.info_btn = QPushButton("应用信息")
-        self.info_btn.setEnabled(False)
-        self.info_btn.clicked.connect(self.show_app_info)
-        
+        self.start_btn.setEnabled(False)
         action_layout.addWidget(self.start_btn)
+        
+        self.stop_btn = QPushButton("停止")
+        self.stop_btn.clicked.connect(lambda: self.perform_app_action("stop"))
+        self.stop_btn.setEnabled(False)
         action_layout.addWidget(self.stop_btn)
-        action_layout.addWidget(self.info_btn)
+        
+        self.uninstall_btn = QPushButton("卸载")
+        self.uninstall_btn.clicked.connect(lambda: self.perform_app_action("uninstall"))
+        self.uninstall_btn.setEnabled(False)
         action_layout.addWidget(self.uninstall_btn)
         
-        app_layout.addLayout(action_layout)
+        self.info_btn = QPushButton("查看信息")
+        self.info_btn.clicked.connect(self.show_app_info)
+        self.info_btn.setEnabled(False)
+        action_layout.addWidget(self.info_btn)
         
-        # 添加标签页
-        self.tab_widget.addTab(app_tab, "应用列表")
+        app_list_layout.addLayout(action_layout)
         
-        # 添加组件到主布局
-        layout.addWidget(device_group)
-        layout.addWidget(self.tab_widget, 1)
+        # 应用详情区域
+        app_detail_group = QGroupBox("应用详情")
+        app_detail_layout = QVBoxLayout(app_detail_group)
         
-        # 状态标签
-        self.status_label = QLabel("准备就绪")
-        self.status_label.setStyleSheet("color: #4287f5; font-weight: bold;")
-        layout.addWidget(self.status_label)
+        # 使用选项卡组织详情内容
+        self.detail_tabs = QTabWidget()
+        
+        # 基本信息选项卡
+        basic_info_tab = QWidget()
+        basic_info_layout = QVBoxLayout(basic_info_tab)
+        self.app_info_text = QTextEdit()
+        self.app_info_text.setReadOnly(True)
+        basic_info_layout.addWidget(self.app_info_text)
+        self.detail_tabs.addTab(basic_info_tab, "基本信息")
+        
+        # 日志选项卡
+        log_tab = QWidget()
+        log_layout = QVBoxLayout(log_tab)
+        self.log_text = QTextEdit()
+        self.log_text.setReadOnly(True)
+        log_layout.addWidget(self.log_text)
+        
+        log_btn_layout = QHBoxLayout()
+        self.clear_log_btn = QPushButton("清空日志")
+        self.clear_log_btn.clicked.connect(self.log_text.clear)
+        log_btn_layout.addWidget(self.clear_log_btn)
+        log_layout.addLayout(log_btn_layout)
+        
+        self.detail_tabs.addTab(log_tab, "操作日志")
+        
+        app_detail_layout.addWidget(self.detail_tabs)
+        
+        # 添加到分割器
+        splitter.addWidget(app_list_group)
+        splitter.addWidget(app_detail_group)
+        splitter.setSizes([300, 500])  # 设置初始大小比例
+        
+        main_layout.addWidget(splitter, 1)
+        
+        # 底部按钮区域
+        button_layout = QHBoxLayout()
+        
+        self.close_btn = QPushButton("关闭")
+        self.close_btn.clicked.connect(self.close)
+        button_layout.addStretch(1)
+        button_layout.addWidget(self.close_btn)
+        
+        main_layout.addLayout(button_layout)
         
     def refresh_devices(self):
         """刷新设备列表"""
-        # 获取设备列表
-        devices = self.controller.get_devices()
-        
-        # 保存当前选中的设备ID
-        current_device_id = self.device_combo.currentData() if self.device_combo.count() > 0 else None
-        
-        # 清空当前列表
         self.device_combo.clear()
+        self.app_list_widget.clear()
+        self.app_info_text.clear()
         
-        # 更新设备列表
-        for device_id, model in devices:
-            self.device_combo.addItem(f"{model} ({device_id})", device_id)
+        # 禁用操作按钮
+        self.start_btn.setEnabled(False)
+        self.stop_btn.setEnabled(False)
+        self.uninstall_btn.setEnabled(False)
+        self.info_btn.setEnabled(False)
+        
+        try:
+            devices = self.controller.get_devices()
             
-        # 检查是否有设备
-        if self.device_combo.count() > 0:
-            # 如果之前有选中的设备，尝试恢复选择
-            if current_device_id:
-                for i in range(self.device_combo.count()):
-                    if self.device_combo.itemData(i) == current_device_id:
-                        self.device_combo.setCurrentIndex(i)
-                        break
-            self.status_label.setText(f"已找到 {self.device_combo.count()} 个设备")
-        else:
-            self.status_label.setText("未发现设备，请检查连接")
+            if not devices:
+                self.log("未检测到设备")
+                return
+                
+            for device_id, model in devices:
+                self.device_combo.addItem(f"{model} ({device_id})", device_id)
+                
+            if self.device_combo.count() > 0:
+                self.device_combo.setCurrentIndex(0)
+                
+        except Exception as e:
+            self.log(f"刷新设备列表出错: {e}")
             
     def on_device_changed(self, index):
-        """设备选择变更"""
+        """设备选择改变处理"""
+        self.app_list_widget.clear()
+        self.app_info_text.clear()
+        
         if index >= 0:
+            self.selected_device = self.device_combo.currentData()
+            self.log(f"已选择设备: {self.selected_device}")
+            
             # 加载应用列表
             self.load_app_list()
         else:
-            # 清空应用列表
-            self.app_list.clear()
+            self.selected_device = None
             
     def get_current_device(self):
         """获取当前选择的设备ID"""
-        index = self.device_combo.currentIndex()
-        if index >= 0:
-            return self.device_combo.itemData(index)
+        if self.device_combo.currentIndex() >= 0:
+            return self.device_combo.currentData()
         return None
-        
+            
     def load_app_list(self):
         """加载应用列表"""
         device_id = self.get_current_device()
         if not device_id:
+            self.log("请先选择一个设备")
             return
             
-        # 清空列表
-        self.app_list.clear()
+        # 清空列表和缓存
+        self.app_list_widget.clear()
+        self.app_list = []
+        self.app_icons = {}
         
-        # 显示加载进度条
-        self.progress_bar.setVisible(True)
+        # 显示进度条
         self.progress_bar.setValue(0)
+        self.progress_bar.setVisible(True)
         
-        # 设置状态
-        self.status_label.setText("正在加载应用列表...")
-        
-        # 是否显示系统应用
-        show_system = self.show_system_check.currentIndex() == 1
-        
-        # 创建线程加载应用列表
-        self.app_list_thread = AppListThread(self.controller, device_id, show_system)
+        # 在后台线程中加载
+        self.app_list_thread = AppListThread(
+            self.controller, 
+            device_id,
+            self.show_system_cb.isChecked()
+        )
         self.app_list_thread.app_loaded.connect(self.update_app_list)
         self.app_list_thread.loading_progress.connect(self.update_loading_progress)
         self.app_list_thread.app_icon_loaded.connect(self.update_app_icon)
@@ -428,299 +479,229 @@ class AppManagerDialog(QDialog):
         
     def update_loading_progress(self, current, total):
         """更新加载进度"""
-        self.progress_bar.setMaximum(total)
-        self.progress_bar.setValue(current)
+        percent = (current / total) * 100 if total > 0 else 0
+        self.progress_bar.setValue(int(percent))
         
     def update_app_icon(self, package_name, icon_data):
         """更新应用图标"""
-        if not icon_data:
-            return
+        try:
+            # 将图标数据转换为QPixmap
+            pixmap = QPixmap()
+            pixmap.loadFromData(icon_data)
             
-        self.app_icons[package_name] = icon_data
+            # 创建图标对象
+            icon = QIcon(pixmap)
+            
+            # 保存到缓存
+            self.app_icons[package_name] = icon
+            
+            # 更新列表项图标
+            for i in range(self.app_list_widget.count()):
+                item = self.app_list_widget.item(i)
+                data = item.data(Qt.UserRole)
+                if data == package_name:
+                    item.setIcon(icon)
+                    break
+        except Exception as e:
+            print(f"更新应用图标出错: {e}")
         
-        # 更新列表项的图标
-        for i in range(self.app_list.count()):
-            item = self.app_list.item(i)
-            if item.data(Qt.UserRole) == package_name:
-                pixmap = QPixmap()
-                pixmap.loadFromData(icon_data)
-                item.setIcon(QIcon(pixmap))
-                break
-    
     def update_app_list(self, app_list):
         """更新应用列表"""
-        # 隐藏进度条
-        self.progress_bar.setVisible(False)
+        self.app_list = app_list
+        self.app_list_widget.clear()
         
-        # 清空列表
-        self.app_list.clear()
+        if not app_list:
+            self.log("没有找到应用")
+            self.progress_bar.setVisible(False)
+            return
         
         # 添加应用到列表
         for display_name, package_name in app_list:
-            if display_name == package_name.split('.')[-1].capitalize():
-                # 如果只有默认名称，只显示包名
-                item = QListWidgetItem(f"{package_name}")
-            else:
-                # 如果有应用名称，同时显示应用名称和包名
-                item = QListWidgetItem(f"{display_name}\n{package_name}")
-                
-                # 设置字体样式
-                font = item.font()
-                font.setBold(True)
-                item.setFont(font)
-            
-            # 设置固定高度
-            item.setSizeHint(QSize(item.sizeHint().width(), 48))
-            
-            # 设置图标
-            if package_name in self.app_icons:
-                pixmap = QPixmap()
-                pixmap.loadFromData(self.app_icons[package_name])
-                item.setIcon(QIcon(pixmap))
-            
+            item = QListWidgetItem(display_name)
             item.setData(Qt.UserRole, package_name)
-            self.app_list.addItem(item)
+            item.setToolTip(package_name)
             
-        # 更新状态
-        self.status_label.setText(f"已加载 {len(app_list)} 个应用")
+            # 设置默认图标
+            default_icon = QIcon.fromTheme("application-x-executable")
+            if default_icon.isNull():
+                # 使用系统默认图标
+                default_icon = self.style().standardIcon(self.style().SP_FileIcon)
+            item.setIcon(default_icon)
+            
+            # 如果已有图标则设置
+            if package_name in self.app_icons:
+                item.setIcon(self.app_icons[package_name])
+                
+            self.app_list_widget.addItem(item)
+            
+        self.log(f"已加载 {len(app_list)} 个应用")
+        self.progress_bar.setVisible(False)
         
     def reload_apps(self):
         """重新加载应用列表"""
         self.load_app_list()
         
     def filter_apps(self):
-        """筛选应用列表"""
+        """根据输入过滤应用列表"""
         filter_text = self.filter_input.text().lower()
-        
-        for i in range(self.app_list.count()):
-            item = self.app_list.item(i)
-            item.setHidden(filter_text and filter_text not in item.text().lower())
+        for i in range(self.app_list_widget.count()):
+            item = self.app_list_widget.item(i)
+            display_name = item.text().lower()
+            package_name = item.data(Qt.UserRole).lower()
+            item.setHidden(filter_text and not (filter_text in display_name or filter_text in package_name))
             
     def on_app_selected(self):
-        """应用选择变更"""
-        # 获取选中项
-        selected_items = self.app_list.selectedItems()
-        
-        # 启用/禁用按钮
-        has_selection = len(selected_items) > 0
-        self.start_btn.setEnabled(has_selection)
-        self.stop_btn.setEnabled(has_selection)
-        self.uninstall_btn.setEnabled(has_selection)
-        self.info_btn.setEnabled(has_selection)  # 同时启用应用信息按钮
+        """应用选择改变处理"""
+        current_item = self.app_list_widget.currentItem()
+        if current_item:
+            self.selected_package = current_item.data(Qt.UserRole)
+            
+            # 更新应用信息
+            self.app_info_text.setText(
+                f"应用名称: {current_item.text()}\n"
+                f"包名: {self.selected_package}\n"
+                f"设备: {self.selected_device}\n"
+            )
+            
+            # 启用操作按钮
+            self.start_btn.setEnabled(True)
+            self.stop_btn.setEnabled(True)
+            self.uninstall_btn.setEnabled(True)
+            self.info_btn.setEnabled(True)
+        else:
+            self.selected_package = None
+            self.app_info_text.clear()
+            
+            # 禁用操作按钮
+            self.start_btn.setEnabled(False)
+            self.stop_btn.setEnabled(False)
+            self.uninstall_btn.setEnabled(False)
+            self.info_btn.setEnabled(False)
         
     def perform_app_action(self, action):
         """执行应用操作"""
-        # 获取当前设备
-        device_id = self.get_current_device()
-        if not device_id:
-            self.status_label.setText("未找到设备")
+        if not self.selected_device or not self.selected_package:
+            self.log("请先选择设备和应用")
             return
             
-        # 获取选中的应用
-        selected_items = self.app_list.selectedItems()
-        if not selected_items:
-            self.status_label.setText("未选择应用")
-            return
-            
-        # 获取选中的包名
-        package_name = selected_items[0].data(Qt.UserRole)
-        
-        # 确认卸载操作
+        # 确认卸载
         if action == "uninstall":
             reply = QMessageBox.question(
-                self, 
-                "确认卸载", 
-                f"确定要卸载应用 {package_name} 吗？",
+                self,
+                "确认卸载",
+                f"确定要卸载应用 {self.selected_package} 吗？\n此操作不可恢复！",
                 QMessageBox.Yes | QMessageBox.No,
                 QMessageBox.No
             )
             if reply != QMessageBox.Yes:
                 return
                 
-        # 更新状态
-        self.status_label.setText(f"正在{action}应用...")
+        # 显示操作信息
+        action_descriptions = {
+            "start": "启动",
+            "stop": "停止",
+            "uninstall": "卸载"
+        }
         
-        # 禁用按钮
+        description = action_descriptions.get(action, action)
+        self.log(f"正在{description}应用 {self.selected_package}...")
+        
+        # 禁用操作按钮
         self.start_btn.setEnabled(False)
         self.stop_btn.setEnabled(False)
         self.uninstall_btn.setEnabled(False)
+        self.info_btn.setEnabled(False)
         
-        # 创建线程执行操作
-        self.action_thread = AppActionThread(self.controller, device_id, package_name, action)
+        # 在后台线程中执行操作
+        self.action_thread = AppActionThread(
+            self.controller,
+            self.selected_device,
+            self.selected_package,
+            action
+        )
         self.action_thread.action_result.connect(self.handle_action_result)
         self.action_thread.start()
         
     def handle_action_result(self, success, output):
         """处理操作结果"""
-        # 更新状态
-        self.status_label.setText(output)
+        self.log(output)
         
-        # 如果是卸载操作且成功，刷新应用列表
-        if "uninstall" in output.lower() and success:
-            self.reload_apps()
+        # 如果是卸载操作且成功，则从列表中移除
+        if success and self.selected_package and output.startswith("已卸载应用"):
+            for i in range(self.app_list_widget.count()):
+                item = self.app_list_widget.item(i)
+                if item.data(Qt.UserRole) == self.selected_package:
+                    self.app_list_widget.takeItem(i)
+                    break
+            self.app_info_text.clear()
+            self.selected_package = None
+        
+        # 重新加载应用列表
+        if success and self.selected_device:
+            QTimer.singleShot(1000, self.reload_apps)
+        
+        # 重新启用操作按钮
+        if self.selected_package:
+            self.start_btn.setEnabled(True)
+            self.stop_btn.setEnabled(True)
+            self.uninstall_btn.setEnabled(True)
+            self.info_btn.setEnabled(True)
             
-        # 重新启用按钮
-        self.on_app_selected()
-
     def show_app_info(self):
         """显示应用详细信息"""
-        # 获取当前设备
-        device_id = self.get_current_device()
-        if not device_id:
-            self.status_label.setText("未找到设备")
+        if not self.selected_device or not self.selected_package:
             return
             
-        # 获取选中的应用
-        selected_items = self.app_list.selectedItems()
-        if not selected_items:
-            self.status_label.setText("未选择应用")
-            return
-            
-        # 获取选中的包名
-        package_name = selected_items[0].data(Qt.UserRole)
-        
-        # 显示正在加载信息
-        self.status_label.setText(f"正在加载 {package_name} 的详细信息...")
-        
-        # 创建等待对话框
-        info_dialog = QDialog(self)
-        info_dialog.setWindowTitle(f"应用信息 - {package_name}")
-        info_dialog.resize(700, 500)
-        
-        layout = QVBoxLayout(info_dialog)
-        
-        # 加载图标和基本信息
-        header_layout = QHBoxLayout()
-        
-        # 图标显示
-        icon_label = QLabel()
-        icon_label.setFixedSize(64, 64)
-        
-        # 如果有图标，显示图标
-        if package_name in self.app_icons:
-            pixmap = QPixmap()
-            pixmap.loadFromData(self.app_icons[package_name])
-            icon_label.setPixmap(pixmap.scaled(64, 64, Qt.KeepAspectRatio, Qt.SmoothTransformation))
-        
-        header_layout.addWidget(icon_label)
-        
-        # 应用基本信息
-        info_label = QLabel(f"包名: {package_name}")
-        info_label.setTextInteractionFlags(Qt.TextSelectableByMouse)
-        header_layout.addWidget(info_label, 1)
-        
-        layout.addLayout(header_layout)
-        
-        # 创建选项卡
-        tab_widget = QTabWidget()
-        
-        # 基本信息选项卡
-        basic_tab = QWidget()
-        basic_layout = QVBoxLayout(basic_tab)
-        
-        # 获取基本信息
-        basic_info = QTextEdit()
-        basic_info.setReadOnly(True)
-        basic_layout.addWidget(basic_info)
-        
-        # 使用dumpsys获取应用信息
-        cmd = f"shell dumpsys package {package_name} | grep -E 'versionName|firstInstallTime|lastUpdateTime|enabled|userId|targetSdk'"
-        result = self.controller.execute_adb_command(cmd, device_id)
+        # 获取应用信息
+        cmd = f"shell dumpsys package {self.selected_package}"
+        result = self.controller.execute_adb_command(cmd, self.selected_device)
         
         if result[0] and result[1]:
-            # 处理提取的信息
-            info_text = "应用基本信息:\n\n"
+            # 创建新窗口显示信息
+            info_dialog = QDialog(self)
+            info_dialog.setWindowTitle(f"应用信息 - {self.selected_package}")
+            info_dialog.resize(800, 600)
             
-            lines = result[1].split('\n')
-            for line in lines:
-                line = line.strip()
-                if line:
-                    info_text += f"{line}\n"
+            layout = QVBoxLayout(info_dialog)
             
-            basic_info.setText(info_text)
+            # 文本编辑器显示信息
+            text_edit = QTextEdit()
+            text_edit.setReadOnly(True)
+            text_edit.setPlainText(result[1])
+            layout.addWidget(text_edit)
+            
+            # 关闭按钮
+            btn_layout = QHBoxLayout()
+            close_btn = QPushButton("关闭")
+            close_btn.clicked.connect(info_dialog.close)
+            btn_layout.addStretch(1)
+            btn_layout.addWidget(close_btn)
+            layout.addLayout(btn_layout)
+            
+            info_dialog.exec_()
         else:
-            basic_info.setText("无法获取应用基本信息")
-        
-        tab_widget.addTab(basic_tab, "基本信息")
-        
-        # 权限选项卡
-        perm_tab = QWidget()
-        perm_layout = QVBoxLayout(perm_tab)
-        
-        perm_info = QTextEdit()
-        perm_info.setReadOnly(True)
-        perm_layout.addWidget(perm_info)
-        
-        # 获取权限信息
-        cmd = f"shell dumpsys package {package_name} | grep -A 50 'granted=true'"
-        result = self.controller.execute_adb_command(cmd, device_id)
-        
-        if result[0] and result[1]:
-            # 处理权限信息
-            perm_text = "应用权限:\n\n"
+            self.log(f"获取应用信息失败: {result[1]}")
             
-            lines = result[1].split('\n')
-            for line in lines:
-                line = line.strip()
-                if "permission." in line and "granted=" in line:
-                    perm_text += f"{line}\n"
-            
-            perm_info.setText(perm_text)
-        else:
-            perm_info.setText("无法获取应用权限信息")
+    def log(self, message):
+        """向日志中添加消息"""
+        # 添加时间戳
+        import datetime
+        timestamp = datetime.datetime.now().strftime("%H:%M:%S")
+        self.log_text.append(f"[{timestamp}] {message}")
         
-        tab_widget.addTab(perm_tab, "权限")
-        
-        # 活动选项卡
-        activity_tab = QWidget()
-        activity_layout = QVBoxLayout(activity_tab)
-        
-        activity_info = QTextEdit()
-        activity_info.setReadOnly(True)
-        activity_layout.addWidget(activity_info)
-        
-        # 获取活动信息
-        cmd = f"shell dumpsys package {package_name} | grep -A 20 'Activities:'"
-        result = self.controller.execute_adb_command(cmd, device_id)
-        
-        if result[0] and result[1]:
-            activity_info.setText(f"应用活动:\n\n{result[1]}")
-        else:
-            activity_info.setText("无法获取应用活动信息")
-        
-        tab_widget.addTab(activity_tab, "活动")
-        
-        # 按钮区域
-        btn_layout = QHBoxLayout()
-        
-        # 打开应用按钮
-        open_btn = QPushButton("启动应用")
-        open_btn.clicked.connect(lambda: self.perform_app_action("start"))
-        btn_layout.addWidget(open_btn)
-        
-        # 卸载应用按钮
-        uninstall_btn = QPushButton("卸载应用")
-        uninstall_btn.clicked.connect(lambda: self.perform_app_action("uninstall"))
-        btn_layout.addWidget(uninstall_btn)
-        
-        # 关闭按钮
-        close_btn = QPushButton("关闭")
-        close_btn.clicked.connect(info_dialog.close)
-        btn_layout.addWidget(close_btn)
-        
-        # 添加选项卡和按钮
-        layout.addWidget(tab_widget)
-        layout.addLayout(btn_layout)
-        
-        # 显示对话框
-        self.status_label.setText("准备就绪")
-        info_dialog.exec_()
+        # 滚动到底部
+        scrollbar = self.log_text.verticalScrollBar()
+        scrollbar.setValue(scrollbar.maximum())
+
 
 if __name__ == "__main__":
-    # 直接运行此文件时的测试代码
+    # 独立运行时的代码
     app = QApplication(sys.argv)
+    
     from scrcpy_controller import ScrcpyController
     controller = ScrcpyController()
+    
     dialog = AppManagerDialog(None, controller)
     dialog.show()
+    
     sys.exit(app.exec_()) 

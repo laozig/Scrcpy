@@ -4,6 +4,7 @@
 import sys
 import os
 import subprocess
+import time
 from PyQt5.QtWidgets import (
     QApplication, QMainWindow, QVBoxLayout, QHBoxLayout, QWidget, QLabel, 
     QComboBox, QPushButton, QLineEdit, QFileDialog, QMessageBox, QTextEdit,
@@ -327,7 +328,7 @@ class ScrcpyUI(QMainWindow):
                 '/usr/bin/adb',
                 '/usr/local/bin/adb'
             ]
-            
+        
             for path in common_paths:
                 if os.path.isfile(path):
                     return path
@@ -374,7 +375,7 @@ class ScrcpyUI(QMainWindow):
                 '/usr/bin/scrcpy',
                 '/usr/local/bin/scrcpy'
             ]
-            
+        
             for path in common_paths:
                 if os.path.isfile(path):
                     return path
@@ -601,6 +602,7 @@ class ScrcpyUI(QMainWindow):
         screenshot_action.triggered.connect(self.take_screenshot)
         tools_menu.addAction(screenshot_action)
         
+        # 添加应用管理器入口到工具菜单
         app_manager_action = QAction("应用管理器", self)
         app_manager_action.triggered.connect(self.show_app_manager)
         tools_menu.addAction(app_manager_action)
@@ -741,9 +743,9 @@ class ScrcpyUI(QMainWindow):
         try:
             # 创建进程
             process = QProcess()
-            process.readyReadStandardOutput.connect(lambda: self.handle_process_output(process, device_id))
-            process.readyReadStandardError.connect(lambda: self.handle_process_error(process, device_id))
-            process.finished.connect(lambda: self.handle_process_finished(device_id))
+            process.readyReadStandardOutput.connect(lambda proc=process, dev=device_id: self.handle_process_output(proc, dev))
+            process.readyReadStandardError.connect(lambda proc=process, dev=device_id: self.handle_process_error(proc, dev))
+            process.finished.connect(lambda exitCode, exitStatus, dev=device_id: self.handle_process_finished(dev))
             
             # 保存进程
             self.device_processes[device_id] = process
@@ -920,13 +922,11 @@ class ScrcpyUI(QMainWindow):
             cursor.movePosition(cursor.StartOfLine, cursor.KeepAnchor)
             cursor.removeSelectedText()
             # 添加带计数的消息
-            formatted_message = f"[{timestamp}] {message} (x{self.repeat_count})"
+            self.log_text.append(f"[{timestamp}] {message} (x{self.repeat_count})")
         else:
             self.last_log_message = message
             self.repeat_count = 1
-            formatted_message = f"[{timestamp}] {message}"
-            
-        self.log_text.append(formatted_message)
+            self.log_text.append(f"[{timestamp}] {message}")
         
         # 滚动到底部
         scrollbar = self.log_text.verticalScrollBar()
@@ -1060,7 +1060,27 @@ class ScrcpyUI(QMainWindow):
             QMessageBox.warning(self, "警告", "未检测到设备")
             return
             
+        # 询问用户是否要先停止所有当前运行的设备进程
+        if self.device_processes:
+            reply = QMessageBox.question(
+                self, "已有设备运行", "是否先停止当前所有设备进程？",
+                QMessageBox.Yes | QMessageBox.No, QMessageBox.Yes
+            )
+            if reply == QMessageBox.Yes:
+                self.stop_scrcpy()  # 停止所有当前设备进程
+        
         count = 0
+        device_count = len(devices)
+        
+        # 如果设备超过1个，询问用户是否以轻量模式运行
+        lite_mode = False
+        if device_count > 1:
+            reply = QMessageBox.question(
+                self, "多设备连接模式", "多设备连接可能会占用较大系统资源，是否以轻量模式运行？\n(低分辨率、低比特率)",
+                QMessageBox.Yes | QMessageBox.No, QMessageBox.Yes
+            )
+            lite_mode = (reply == QMessageBox.Yes)
+        
         for device_id, model in devices:
             # 检查设备是否已经连接
             if device_id in self.device_processes and self.device_processes[device_id].state() == QProcess.Running:
@@ -1071,35 +1091,98 @@ class ScrcpyUI(QMainWindow):
             cmd = [self.scrcpy_path]
             cmd.extend(['-s', device_id])
             
-            # 添加最大尺寸参数以避免屏幕过大
-            try:
-                maxsize = int(self.maxsize_input.text()) if self.maxsize_input.text() else 1080
-                cmd.extend(['--max-size', str(maxsize)])
-            except ValueError:
-                cmd.extend(['--max-size', '1080'])
+            # 轻量模式下使用更低的设置
+            if lite_mode:
+                cmd.extend(['--max-size', '800'])
+                cmd.extend(['--video-bit-rate', '2M'])
+                cmd.extend(['--max-fps', '25'])
+            else:
+                # 添加最大尺寸参数
+                try:
+                    maxsize = int(self.maxsize_input.text()) if self.maxsize_input.text() else 1080
+                    cmd.extend(['--max-size', str(maxsize)])
+                except ValueError:
+                    cmd.extend(['--max-size', '1080'])
+                
+                # 添加比特率参数
+                if self.bitrate_input.text():
+                    try:
+                        bitrate = int(self.bitrate_input.text())
+                        cmd.extend(['--video-bit-rate', f'{bitrate}M'])
+                    except ValueError:
+                        cmd.extend(['--video-bit-rate', '4M'])
                 
             # 添加窗口位置偏移，避免所有窗口重叠
-            cmd.extend(['--window-x', str(count * 100)])
-            cmd.extend(['--window-y', str(count * 50)])
+            # 将窗口均匀分布在屏幕上 (使用更智能的排列方式)
+            columns = max(1, int(device_count ** 0.5))  # 根据设备数量计算合适的列数
+            row = count // columns
+            col = count % columns
+            x_offset = col * 320  # 每个窗口水平间隔320像素
+            y_offset = row * 240  # 每个窗口垂直间隔240像素
+            
+            cmd.extend(['--window-x', str(x_offset + 50)])  # 加上50像素的初始边距
+            cmd.extend(['--window-y', str(y_offset + 50)])
             
             # 设置窗口标题
             window_title = f"{model} - {device_id}"
             cmd.extend(['--window-title', window_title])
+            
+            # 添加其他选项，与单设备启动保持一致
+            if self.show_touches_cb.isChecked():
+                cmd.append('--show-touches')
+                
+            # 重要：确保不启用无交互模式，除非用户特别指定
+            if not self.no_control_cb.isChecked():
+                # 确保可以控制设备
+                pass  # 不添加--no-control参数
+            else:
+                # 用户特意选择了无交互模式
+                cmd.append('--no-control')
+                
+            if self.disable_clipboard_cb.isChecked():
+                cmd.append('--no-clipboard-autosync')
+                
+            # 添加方向控制
+            rotation_option = self.rotation_combo.currentText()
+            if rotation_option == "横屏":
+                cmd.append('--lock-video-orientation=0')
+            elif rotation_option == "竖屏":
+                cmd.append('--lock-video-orientation=1')
+            
+            # 如果设置了全屏模式则添加参数
+            if self.fullscreen_cb.isChecked() and device_count == 1:
+                # 只有在单设备模式下才启用全屏
+                cmd.append('--fullscreen')
+                
+            # 如果设置了窗口置顶则添加参数
+            if self.always_top_cb.isChecked():
+                cmd.append('--always-on-top')
+            
+            # 在Windows平台上，确保允许窗口移动
+            # --window-borderless 是一个不接受参数的标志选项
+            # 默认情况下窗口是有边框的，所以不添加此参数
+            # 如果要无边框，才需要添加 --window-borderless
             
             try:
                 # 创建进程
                 process = QProcess()
                 process.readyReadStandardOutput.connect(lambda proc=process, dev=device_id: self.handle_process_output(proc, dev))
                 process.readyReadStandardError.connect(lambda proc=process, dev=device_id: self.handle_process_error(proc, dev))
-                process.finished.connect(lambda exitcode, status, dev=device_id: self.handle_process_finished(dev))
+                process.finished.connect(lambda exitCode, exitStatus, dev=device_id: self.handle_process_finished(dev))
                 
                 # 保存进程
                 self.device_processes[device_id] = process
                 
                 # 启动进程
                 process.start(cmd[0], cmd[1:])
-                self.log(f"已启动设备 {model} ({device_id}) 的 scrcpy 进程")
+                self.log(f"已启动设备 {model} ({device_id}) 的 scrcpy 进程，命令: {' '.join(cmd)}")
                 count += 1
+                
+                # 每个设备启动后稍微等待一下，避免系统资源争用
+                if count < len(devices):
+                    QTimer.singleShot(1000, lambda: self.log("等待下一个设备启动..."))
+                    time.sleep(1.0)  # 暂停1秒
+                
             except Exception as e:
                 self.log(f"启动设备 {model} ({device_id}) 失败: {str(e)}")
                 if device_id in self.device_processes:
@@ -1107,6 +1190,26 @@ class ScrcpyUI(QMainWindow):
                     
         if count > 0:
             self.log(f"成功连接 {count} 个设备")
+            
+            # 提示用户如何移动窗口
+            if count > 1:
+                QMessageBox.information(
+                    self, 
+                    "多设备连接成功", 
+                    f"成功连接 {count} 个设备。\n\n"
+                    "您可以拖动窗口标题栏移动每个设备窗口的位置。\n"
+                    "使用Alt+左键可以调整窗口大小。\n"
+                    "使用鼠标右键可以返回上一步。"
+                )
+    
+    def show_about(self):
+        """显示关于对话框"""
+        about_text = "Scrcpy GUI\n\n"
+        about_text += "一个基于scrcpy的Android设备镜像和控制工具。\n\n"
+        about_text += "支持多设备连接、WIFI连接、屏幕录制等功能。\n"
+        about_text += "支持截图功能。\n\n"
+        
+        QMessageBox.about(self, "关于Scrcpy GUI", about_text)
 
     def show_app_manager(self):
         """显示应用管理器对话框"""
@@ -1118,54 +1221,60 @@ class ScrcpyUI(QMainWindow):
         # 创建应用管理器对话框
         app_manager = AppManagerDialog(self, self.controller)
         app_manager.exec_()
-    
-    def show_about(self):
-        """显示关于对话框"""
-        about_text = "Scrcpy GUI\n\n"
-        about_text += "一个基于scrcpy的Android设备镜像和控制工具。\n\n"
-        about_text += "支持多设备连接、WIFI连接、屏幕录制等功能。\n"
-        about_text += "支持应用管理、截图等扩展功能。\n\n"
-        
-        QMessageBox.about(self, "关于Scrcpy GUI", about_text)
+
+def parse_arguments():
+    """解析命令行参数"""
+    import argparse
+    parser = argparse.ArgumentParser(description='Scrcpy GUI - Android设备控制工具')
+    parser.add_argument('--app-manager', action='store_true', help='直接打开应用管理器')
+    parser.add_argument('--version', action='store_true', help='显示版本信息')
+    parser.add_argument('--config', type=str, help='指定配置文件路径')
+    return parser.parse_args()
 
 def main():
+    # 解析命令行参数
+    args = parse_arguments()
+    
+    # 显示版本信息
+    if args.version:
+        print("Scrcpy GUI v1.0")
+        return
+
     app = QApplication(sys.argv)
     
-    # 解析命令行参数
-    if len(sys.argv) > 1 and sys.argv[1] == "--app-manager":
-        # 直接启动应用管理器
-        controller = ScrcpyController()
-        app_manager = AppManagerDialog(None, controller)
-        app_manager.show()
-    else:
-        # 设置应用字体
-        app_font = QFont("微软雅黑", 9)
-        QApplication.setFont(app_font)
-        
-        # 设置应用程序图标
-        icon_path = ""
-        for path in [
-            "1.ico",                       # 当前目录
-            os.path.join(os.getcwd(), "1.ico"),  # 完整路径
-            os.path.join(os.path.dirname(os.path.abspath(__file__)), "1.ico"),  # 脚本目录
-            os.path.join(os.path.dirname(sys.executable), "1.ico"),  # 可执行文件目录
-        ]:
-            if os.path.exists(path):
-                icon_path = path
-                break
-                
-        if icon_path:
-            try:
-                app_icon = QIcon(icon_path)
-                if not app_icon.isNull():
-                    app.setWindowIcon(app_icon)
-                    print(f"已设置应用程序图标: {icon_path}")
-            except Exception as e:
-                print(f"应用程序图标设置失败: {e}")
-        
-        # 创建并显示主窗口
-        main_window = ScrcpyUI()
-        main_window.show()
+    # 设置应用字体
+    app_font = QFont("微软雅黑", 9)
+    QApplication.setFont(app_font)
+    
+    # 设置应用程序图标
+    icon_path = ""
+    for path in [
+        "1.ico",                       # 当前目录
+        os.path.join(os.getcwd(), "1.ico"),  # 完整路径
+        os.path.join(os.path.dirname(os.path.abspath(__file__)), "1.ico"),  # 脚本目录
+        os.path.join(os.path.dirname(sys.executable), "1.ico"),  # 可执行文件目录
+    ]:
+        if os.path.exists(path):
+            icon_path = path
+            break
+            
+    if icon_path:
+        try:
+            app_icon = QIcon(icon_path)
+            if not app_icon.isNull():
+                app.setWindowIcon(app_icon)
+                print(f"已设置应用程序图标: {icon_path}")
+        except Exception as e:
+            print(f"应用程序图标设置失败: {e}")
+    
+    # 创建并显示主窗口
+    main_window = ScrcpyUI()
+    main_window.show()
+    
+    # 如果指定了打开应用管理器，则打开它
+    if args.app_manager:
+        # 使用QTimer.singleShot确保主窗口已完全加载
+        QTimer.singleShot(100, main_window.show_app_manager)
     
     sys.exit(app.exec_())
 

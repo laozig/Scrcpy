@@ -4,13 +4,14 @@
 # 此文件用于生成ScrcpyGUI的应用图标
 # 2025-05-10: 更新为测试用绿色图标
 
-from PIL import Image, ImageDraw
+from PIL import Image, ImageDraw, ImageFont
 import os
 import sys
 import io
 import base64
 import struct
 import subprocess
+import platform
 
 def get_icon_bytes():
     """
@@ -74,10 +75,10 @@ def create_simple_icon(output_path="1.ico"):
             image = Image.new('RGBA', (size, size), color=(0, 0, 0, 0))
             draw = ImageDraw.Draw(image)
             
-            # 绘制圆形背景 - 使用鲜艳的绿色作为测试颜色
+            # 绘制圆形背景 - 使用主题蓝色
             margin = int(size * 0.1)
             draw.ellipse([(margin, margin), (size - margin, size - margin)], 
-                         fill=(46, 204, 113, 255))  # 鲜艳的绿色背景
+                         fill=(66, 135, 245, 255))  # 主题蓝色背景
             
             # 绘制一个简单的"S"形状
             width = int(size * 0.5)
@@ -97,12 +98,6 @@ def create_simple_icon(output_path="1.ico"):
             
             # 添加到图像列表
             images.append(image)
-            
-            # 保存PNG用于验证
-            debug_dir = "icon_debug"
-            if not os.path.exists(debug_dir):
-                os.makedirs(debug_dir)
-            image.save(os.path.join(debug_dir, f"icon_{size}x{size}.png"))
         
         # 尝试不同的保存方法
         try:
@@ -191,6 +186,60 @@ def set_file_icon(exe_path, icon_path="1.ico"):
     except Exception as e:
         print(f"设置文件图标属性失败: {e}")
         return False
+
+def create_icon_images(output_path, size=256):
+    try:
+        # 创建一个新的透明图像
+        image = Image.new('RGBA', (size, size), color=(255, 255, 255, 0))
+        draw = ImageDraw.Draw(image)
+
+        # 绘制圆形背景 - 使用主题蓝色
+        circle_color = (66, 135, 245)  # 主题蓝色
+        draw.ellipse((0, 0, size-1, size-1), fill=circle_color)
+        
+        # 绘制字母S作为中心标志 - 白色
+        try:
+            # 尝试加载字体
+            font_size = int(size * 0.6)  # 字体大小为图像大小的60%
+            try:
+                # 尝试加载系统字体
+                font = ImageFont.truetype("arial.ttf", font_size)
+            except:
+                try:
+                    # 在不同系统上尝试不同的字体
+                    if platform.system() == "Windows":
+                        font = ImageFont.truetype("arial.ttf", font_size)
+                    elif platform.system() == "Darwin":  # macOS
+                        font = ImageFont.truetype("AppleGothic.ttf", font_size)
+                    else:  # Linux
+                        font = ImageFont.truetype("DejaVuSans.ttf", font_size)
+                except:
+                    # 如果字体加载失败，使用默认字体
+                    font = ImageFont.load_default()
+            
+            # 计算文字位置，使其居中
+            text = "S"
+            text_width, text_height = draw.textsize(text, font=font)
+            position = ((size - text_width) / 2, (size - text_height) / 2 - font_size * 0.1)
+            
+            # 绘制文字
+            draw.text(position, text, fill=(255, 255, 255, 255), font=font)
+        except Exception as e:
+            # 如果绘制文字失败，绘制一个简单的白色圆圈作为替代
+            center = size / 2
+            radius = size / 4
+            draw.ellipse((center - radius, center - radius, 
+                          center + radius, center + radius), 
+                         fill=(255, 255, 255, 255))
+        
+        # 保存图像
+        # 不要保存调试图像
+        
+        # 保存最终图标
+        return image
+    except Exception as e:
+        print(f"创建图标时发生错误: {e}")
+        return None
 
 if __name__ == "__main__":
     # 创建图标文件

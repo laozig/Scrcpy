@@ -26,7 +26,7 @@ def main():
     print("正在启动应用管理器...")
     
     try:
-        # 使用子进程启动应用管理器
+        # 使用子进程启动应用管理器，添加--app-manager参数
         subprocess.run([sys.executable, main_script, "--app-manager"])
         return 0
     except Exception as e:
