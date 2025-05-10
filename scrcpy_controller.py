@@ -47,7 +47,7 @@ class ScrcpyController:
             if result.returncode != 0:
                 print(f"获取设备列表失败: {result.stderr}")
                 return []
-                
+            
             devices = []
             lines = result.stdout.strip().split('\n')
             
@@ -295,7 +295,7 @@ class ScrcpyController:
             kwargs = {}
             if self.system == 'Windows':
                 kwargs['creationflags'] = subprocess.CREATE_NO_WINDOW
-                
+            
             result = subprocess.run(
                 cmd,
                 capture_output=True,

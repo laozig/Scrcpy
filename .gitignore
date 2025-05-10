@@ -1,10 +1,11 @@
-# Python缓存文件
+# Python缓存和编译文件
 __pycache__/
 *.py[cod]
 *$py.class
 *.so
 .Python
-env/
+
+# 构建和分发相关
 build/
 develop-eggs/
 dist/
@@ -16,68 +17,94 @@ lib64/
 parts/
 sdist/
 var/
+wheels/
 *.egg-info/
 .installed.cfg
 *.egg
 *.manifest
 *.spec
+ScrcpyGUI*.spec
+build_*.py
 
 # Python虚拟环境
 .venv/
 venv/
 ENV/
+env/
 
-# 备份文件
+# 备份和临时文件
 backup/
+temp/
+tmp/
+暂放/
+icon_debug/
 *.bak
 *.backup
 *.old
+*.swp
+*~
 
 # IDE和编辑器文件
 .idea/
 .vscode/
 *.sublime-project
 *.sublime-workspace
+.spyderproject
+.spyproject
+.ropeproject
 
 # 系统文件
 .DS_Store
 Thumbs.db
+Desktop.ini
+$RECYCLE.BIN/
 
 # 日志文件
 *.log
+logs/
 
-# 本地配置文件
+# 配置文件和敏感信息
 scrcpy_config.json
-
-# 临时文件
-temp/
-tmp/
+settings.json
+.env
+*.ini
+!settings_example.json
 
 # 截图和录屏文件
 screenshot_*.png
 record_*.mp4
+record_*.mkv
 
-# 分发文件
-dist/
-build/
+# 图标文件（如果需要包含特定图标请删除）
+# *.ico
+# *.bmp
+# *.png
+
+# PyInstaller 生成的文件
+*.manifest
 *.spec
+.pyo
+.pyd
 
-# PyInstaller
-dist/
-build/
+# Windows快捷方式
+*.lnk
 
-# 项目特有
-.idea/
-.vscode/
-.DS_Store
-settings.json
-scrcpy_config.json
-*.log
+# 测试文件和目录
+.coverage
+.pytest_cache/
+htmlcov/
+.tox/
+nosetests.xml
+coverage.xml
 
-# 个人配置文件可能包含敏感信息
-.env
+# 自动生成的文档
+docs/_build/
+docs/api/
 
-# 图标文件和调试目录
-icon_debug/
-*.ico
-*.bmp 
+# 本地安装的依赖
+node_modules/
+*.tar.gz
+
+# 项目特有忽略
+*.bat
+!启动应用管理器.bat 

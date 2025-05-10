@@ -13,6 +13,7 @@ from PyQt5.QtCore import Qt, QProcess, QTimer
 from PyQt5.QtGui import QIcon, QFont, QPalette, QColor, QPixmap
 
 from scrcpy_controller import ScrcpyController
+from app_manager import AppManagerDialog
 
 class ScrcpyUI(QMainWindow):
     def __init__(self):
@@ -305,15 +306,18 @@ class ScrcpyUI(QMainWindow):
                                        check=False,
                                        startupinfo=startupinfo,
                                        creationflags=creationflags)
+                
+                if result.returncode == 0 and result.stdout.strip():
+                    return result.stdout.strip()
             else:
                 # 在Linux和macOS下查找
                 result = subprocess.run(['which', 'adb'], 
                                        capture_output=True, 
                                        text=True, 
                                        check=False)
-            
-            if result.returncode == 0 and result.stdout.strip():
-                return result.stdout.strip()
+                
+                if result.returncode == 0 and result.stdout.strip():
+                    return result.stdout.strip()
             
             # 如果没有找到，尝试一些常见的路径
             common_paths = [
@@ -327,7 +331,7 @@ class ScrcpyUI(QMainWindow):
             for path in common_paths:
                 if os.path.isfile(path):
                     return path
-                
+            
             # 如果仍然没有找到，返回默认的'adb'命令
             return 'adb'
         except Exception as e:
@@ -349,15 +353,18 @@ class ScrcpyUI(QMainWindow):
                                        check=False,
                                        startupinfo=startupinfo,
                                        creationflags=creationflags)
+                
+                if result.returncode == 0 and result.stdout.strip():
+                    return result.stdout.strip()
             else:
                 # 在Linux和macOS下查找
                 result = subprocess.run(['which', 'scrcpy'], 
                                        capture_output=True, 
                                        text=True, 
                                        check=False)
-            
-            if result.returncode == 0 and result.stdout.strip():
-                return result.stdout.strip()
+                
+                if result.returncode == 0 and result.stdout.strip():
+                    return result.stdout.strip()
             
             # 如果没有找到，尝试一些常见的路径
             common_paths = [
@@ -371,7 +378,7 @@ class ScrcpyUI(QMainWindow):
             for path in common_paths:
                 if os.path.isfile(path):
                     return path
-                
+            
             # 如果仍然没有找到，返回默认的'scrcpy'命令
             return 'scrcpy'
         except Exception as e:
@@ -403,8 +410,11 @@ class ScrcpyUI(QMainWindow):
     def initUI(self):
         # 设置窗口
         self.setWindowTitle('Scrcpy GUI - 安卓屏幕控制')
-        self.setGeometry(100, 100, 800, 600)
-        self.setMinimumSize(700, 500)
+        self.setGeometry(100, 100, 980, 720)  # 增大窗口尺寸
+        self.setMinimumSize(800, 600)  # 增大最小尺寸
+        
+        # 创建菜单栏
+        self.create_menus()
         
         # 创建中央部件和主布局
         central_widget = QWidget()
@@ -556,6 +566,51 @@ class ScrcpyUI(QMainWindow):
         main_layout.addWidget(mirror_group)
         main_layout.addWidget(options_group)
         main_layout.addWidget(log_group, 1)
+        
+    def create_menus(self):
+        """创建菜单栏"""
+        menu_bar = self.menuBar()
+        
+        # 设备菜单
+        device_menu = menu_bar.addMenu("设备")
+        
+        refresh_action = QAction("刷新设备列表", self)
+        refresh_action.triggered.connect(self.check_devices)
+        device_menu.addAction(refresh_action)
+        
+        device_menu.addSeparator()
+        
+        connect_usb_action = QAction("USB连接", self)
+        connect_usb_action.triggered.connect(self.start_scrcpy)
+        device_menu.addAction(connect_usb_action)
+        
+        connect_wifi_action = QAction("WIFI连接", self)
+        connect_wifi_action.triggered.connect(self.connect_wireless)
+        device_menu.addAction(connect_wifi_action)
+        
+        device_menu.addSeparator()
+        
+        disconnect_action = QAction("断开连接", self)
+        disconnect_action.triggered.connect(self.stop_scrcpy)
+        device_menu.addAction(disconnect_action)
+        
+        # 工具菜单
+        tools_menu = menu_bar.addMenu("工具")
+        
+        screenshot_action = QAction("截图", self)
+        screenshot_action.triggered.connect(self.take_screenshot)
+        tools_menu.addAction(screenshot_action)
+        
+        app_manager_action = QAction("应用管理器", self)
+        app_manager_action.triggered.connect(self.show_app_manager)
+        tools_menu.addAction(app_manager_action)
+        
+        # 帮助菜单
+        help_menu = menu_bar.addMenu("帮助")
+        
+        about_action = QAction("关于", self)
+        about_action.triggered.connect(self.show_about)
+        help_menu.addAction(about_action)
         
     def select_record_path(self):
         """选择录制文件保存路径"""
@@ -1053,37 +1108,64 @@ class ScrcpyUI(QMainWindow):
         if count > 0:
             self.log(f"成功连接 {count} 个设备")
 
+    def show_app_manager(self):
+        """显示应用管理器对话框"""
+        # 获取当前选择的设备ID
+        device_id = None
+        if self.device_combo.currentIndex() >= 0:
+            device_id = self.device_combo.currentData()
+            
+        # 创建应用管理器对话框
+        app_manager = AppManagerDialog(self, self.controller)
+        app_manager.exec_()
+    
+    def show_about(self):
+        """显示关于对话框"""
+        about_text = "Scrcpy GUI\n\n"
+        about_text += "一个基于scrcpy的Android设备镜像和控制工具。\n\n"
+        about_text += "支持多设备连接、WIFI连接、屏幕录制等功能。\n"
+        about_text += "支持应用管理、截图等扩展功能。\n\n"
+        
+        QMessageBox.about(self, "关于Scrcpy GUI", about_text)
+
 def main():
     app = QApplication(sys.argv)
     
-    # 设置应用字体
-    app_font = QFont("微软雅黑", 9)
-    QApplication.setFont(app_font)
-    
-    # 设置应用程序图标
-    icon_path = ""
-    for path in [
-        "1.ico",                       # 当前目录
-        os.path.join(os.getcwd(), "1.ico"),  # 完整路径
-        os.path.join(os.path.dirname(os.path.abspath(__file__)), "1.ico"),  # 脚本目录
-        os.path.join(os.path.dirname(sys.executable), "1.ico"),  # 可执行文件目录
-    ]:
-        if os.path.exists(path):
-            icon_path = path
-            break
-            
-    if icon_path:
-        try:
-            app_icon = QIcon(icon_path)
-            if not app_icon.isNull():
-                app.setWindowIcon(app_icon)
-                print(f"已设置应用程序图标: {icon_path}")
-        except Exception as e:
-            print(f"应用程序图标设置失败: {e}")
-    
-    # 创建并显示主窗口
-    main_window = ScrcpyUI()
-    main_window.show()
+    # 解析命令行参数
+    if len(sys.argv) > 1 and sys.argv[1] == "--app-manager":
+        # 直接启动应用管理器
+        controller = ScrcpyController()
+        app_manager = AppManagerDialog(None, controller)
+        app_manager.show()
+    else:
+        # 设置应用字体
+        app_font = QFont("微软雅黑", 9)
+        QApplication.setFont(app_font)
+        
+        # 设置应用程序图标
+        icon_path = ""
+        for path in [
+            "1.ico",                       # 当前目录
+            os.path.join(os.getcwd(), "1.ico"),  # 完整路径
+            os.path.join(os.path.dirname(os.path.abspath(__file__)), "1.ico"),  # 脚本目录
+            os.path.join(os.path.dirname(sys.executable), "1.ico"),  # 可执行文件目录
+        ]:
+            if os.path.exists(path):
+                icon_path = path
+                break
+                
+        if icon_path:
+            try:
+                app_icon = QIcon(icon_path)
+                if not app_icon.isNull():
+                    app.setWindowIcon(app_icon)
+                    print(f"已设置应用程序图标: {icon_path}")
+            except Exception as e:
+                print(f"应用程序图标设置失败: {e}")
+        
+        # 创建并显示主窗口
+        main_window = ScrcpyUI()
+        main_window.show()
     
     sys.exit(app.exec_())
 

@@ -101,6 +101,22 @@ def main():
     if os.path.exists(exe_path):
         print(f"\n打包完成！可执行文件位于 {exe_path} (大小: {os.path.getsize(exe_path)/1024/1024:.2f} MB)")
         
+        # 复制批处理文件到dist目录
+        batch_file = "启动应用管理器.bat"
+        if os.path.exists(batch_file):
+            try:
+                shutil.copy2(batch_file, os.path.join(dist_dir, batch_file))
+                print(f"已复制 {batch_file} 到 {dist_dir}")
+            except Exception as e:
+                print(f"复制批处理文件失败: {e}")
+        else:
+            # 如果批处理文件不存在，则创建它
+            with open(os.path.join(dist_dir, batch_file), 'w', encoding='gbk') as f:
+                f.write('@echo off\necho 正在启动应用管理器...\n')
+                f.write('"%~dp0ScrcpyGUI.exe" --app-manager\n')
+                f.write('if errorlevel 1 (\n    echo 启动失败，错误代码: %errorlevel%\n    pause\n)')
+            print(f"已创建批处理文件 {os.path.join(dist_dir, batch_file)}")
+        
         # 清理图标文件如果存在
         dist_icon_path = os.path.join(dist_dir, icon_path)
         if os.path.exists(dist_icon_path):
