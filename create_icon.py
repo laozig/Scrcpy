@@ -9,6 +9,8 @@ import os
 import sys
 import io
 import base64
+import struct
+import subprocess
 
 def get_icon_bytes():
     """
@@ -146,6 +148,49 @@ def get_icon_base64():
     """
     icon_bytes = get_icon_bytes()
     return base64.b64encode(icon_bytes).decode('utf-8')
+
+def create_resource_script(icon_path="1.ico", output_path="icon_resource.rc"):
+    """
+    创建Windows资源脚本文件，用于设置文件的图标属性
+    """
+    # 资源脚本内容
+    rc_content = f"""
+// ScrcpyGUI 图标资源
+#define IDI_ICON1 101
+IDI_ICON1 ICON DISCARDABLE "{icon_path}"
+"""
+    
+    # 写入资源脚本文件
+    with open(output_path, 'w') as rc_file:
+        rc_file.write(rc_content)
+    
+    print(f"已创建资源脚本文件: {os.path.abspath(output_path)}")
+    return os.path.abspath(output_path)
+
+def set_file_icon(exe_path, icon_path="1.ico"):
+    """
+    为可执行文件设置图标属性，使其在文件浏览器中显示
+    注意：此函数仅在Windows环境下有效，且需要相应的开发工具
+    """
+    try:
+        # 创建资源脚本
+        rc_path = create_resource_script(icon_path)
+        
+        # 编译资源脚本 (需要安装Windows SDK)
+        resource_path = rc_path.replace('.rc', '.res')
+        
+        # 调用rc.exe编译资源脚本
+        subprocess.run(['rc.exe', '/nologo', rc_path], check=True)
+        
+        # 将资源文件附加到exe
+        # 这一步通常需要专业的工具，如ResourceHacker等
+        print(f"资源文件已创建: {resource_path}")
+        print(f"请使用ResourceHacker等工具将资源文件手动附加到EXE: {exe_path}")
+        
+        return True
+    except Exception as e:
+        print(f"设置文件图标属性失败: {e}")
+        return False
 
 if __name__ == "__main__":
     # 创建图标文件
