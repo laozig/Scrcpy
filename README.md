@@ -14,16 +14,11 @@
 - **USB/WiFi连接**：支持USB有线和WiFi无线两种连接方式
 - **录屏/截图**：支持录制设备屏幕和截取屏幕画面
 - **性能调节**：可调整比特率、分辨率、帧率等参数
+- **跨平台支持**：支持Windows、macOS和Linux平台
 
 ## 安装指南
 
-### 前置条件
-
-- Python 3.6+
-- ADB (Android Debug Bridge)
-- Scrcpy
-
-### 安装步骤
+### 方法一：从源码运行（适用于所有平台）
 
 1. 克隆本仓库:
 ```bash
@@ -40,6 +35,63 @@ pip install -r requirements.txt
 ```bash
 python main.py
 ```
+
+### 方法二：使用打包版本（推荐）
+
+1. 下载适用于您平台的预编译版本：
+   - Windows: `ScrcpyGUI.exe`
+   - macOS: `ScrcpyGUI.app`
+   - Linux: `ScrcpyGUI`
+
+2. 确保已安装ADB和scrcpy（请参考下方平台特定说明）
+
+3. 运行下载的应用程序
+
+### 平台特定安装说明
+
+#### Windows
+
+1. 安装ADB: 下载 [Android SDK Platform Tools](https://developer.android.com/studio/releases/platform-tools) 并添加到PATH
+2. 安装scrcpy: 使用Chocolatey (`choco install scrcpy`) 或从 [GitHub](https://github.com/Genymobile/scrcpy/releases) 下载
+
+#### macOS
+
+使用Homebrew安装依赖:
+```bash
+brew install android-platform-tools scrcpy
+```
+
+#### Linux
+
+Ubuntu/Debian:
+```bash
+sudo apt update
+sudo apt install android-tools-adb scrcpy
+```
+
+Fedora:
+```bash
+sudo dnf install android-tools scrcpy
+```
+
+Arch Linux:
+```bash
+sudo pacman -S android-tools scrcpy
+```
+
+更多详细的安装说明，请参考 [INSTALL.md](INSTALL.md)。
+
+## 打包应用程序
+
+如果您想打包应用程序以便分发，我们提供了打包脚本：
+
+```bash
+python build.py
+```
+
+该脚本会自动检测您的操作系统并创建相应的可执行文件。
+
+更多关于打包和分发的详细说明，请参考 [PACKAGING.md](PACKAGING.md)。
 
 ## 使用方法
 
@@ -69,6 +121,7 @@ python main.py
 - **main.py**: 主程序入口和GUI界面实现
 - **scrcpy_controller.py**: 设备控制核心，负责与scrcpy和adb交互
 - **utils.py**: 工具函数集合
+- **build.py**: 跨平台打包脚本
 - **requirements.txt**: 项目依赖
 
 ## 常见问题
@@ -91,6 +144,8 @@ python main.py
 3. 提交您的更改 (`git commit -m 'Add some amazing feature'`)
 4. 推送到分支 (`git push origin feature/amazing-feature`)
 5. 提交 Pull Request
+
+详细的贡献指南请参考 [CONTRIBUTING.md](CONTRIBUTING.md)。
 
 ## 许可证
 

@@ -2,6 +2,25 @@
 __pycache__/
 *.py[cod]
 *$py.class
+*.so
+.Python
+env/
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+*.egg-info/
+.installed.cfg
+*.egg
+*.manifest
+*.spec
 
 # Python虚拟环境
 .venv/
@@ -41,4 +60,19 @@ record_*.mp4
 # 分发文件
 dist/
 build/
-*.spec 
+*.spec
+
+# PyInstaller
+dist/
+build/
+
+# 项目特有
+.idea/
+.vscode/
+.DS_Store
+settings.json
+scrcpy_config.json
+*.log
+
+# 个人配置文件可能包含敏感信息
+.env 
