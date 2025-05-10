@@ -32,11 +32,16 @@ class ScrcpyController:
             list: 设备列表，每个元素为(device_id, model)的元组
         """
         try:
+            kwargs = {}
+            if self.system == 'Windows':
+                kwargs['creationflags'] = subprocess.CREATE_NO_WINDOW
+                
             result = subprocess.run(
                 ["adb", "devices"], 
                 capture_output=True, 
                 text=True, 
-                check=False
+                check=False,
+                **kwargs
             )
             
             if result.returncode != 0:
@@ -61,12 +66,17 @@ class ScrcpyController:
                     if status == 'device':
                         # 获取设备型号信息
                         try:
+                            kwargs = {}
+                            if self.system == 'Windows':
+                                kwargs['creationflags'] = subprocess.CREATE_NO_WINDOW
+                                
                             model_result = subprocess.run(
                                 ["adb", "-s", device_id, "shell", "getprop", "ro.product.model"],
                                 capture_output=True,
                                 text=True,
                                 check=False,
-                                timeout=2 # 设置超时时间
+                                timeout=2, # 设置超时时间
+                                **kwargs
                             )
                             if model_result.returncode == 0:
                                 model = model_result.stdout.strip()
@@ -221,10 +231,15 @@ class ScrcpyController:
         
         # 检查adb
         try:
+            kwargs = {}
+            if self.system == 'Windows':
+                kwargs['creationflags'] = subprocess.CREATE_NO_WINDOW
+                
             adb_version = subprocess.run(
                 ["adb", "version"], 
                 capture_output=True, 
-                text=True
+                text=True,
+                **kwargs
             )
             results["adb"] = True
             match = re.search(r'Android Debug Bridge version ([\d\.]+)', adb_version.stdout)
@@ -238,10 +253,15 @@ class ScrcpyController:
             
         # 检查scrcpy
         try:
+            kwargs = {}
+            if self.system == 'Windows':
+                kwargs['creationflags'] = subprocess.CREATE_NO_WINDOW
+                
             scrcpy_version = subprocess.run(
                 ["scrcpy", "--version"], 
                 capture_output=True, 
-                text=True
+                text=True,
+                **kwargs
             )
             results["scrcpy"] = True
             match = re.search(r'scrcpy ([\d\.]+)', scrcpy_version.stdout)
@@ -272,11 +292,16 @@ class ScrcpyController:
                 cmd.extend(["-s", device_id])
             cmd.extend(["tcpip", str(port)])
             
+            kwargs = {}
+            if self.system == 'Windows':
+                kwargs['creationflags'] = subprocess.CREATE_NO_WINDOW
+                
             result = subprocess.run(
                 cmd,
                 capture_output=True,
                 text=True,
-                check=True
+                check=True,
+                **kwargs
             )
             
             if "error" in result.stdout.lower() or "error" in result.stderr.lower():
@@ -299,11 +324,17 @@ class ScrcpyController:
         """
         try:
             connection_string = f"{ip_address}:{port}"
+            
+            kwargs = {}
+            if self.system == 'Windows':
+                kwargs['creationflags'] = subprocess.CREATE_NO_WINDOW
+                
             result = subprocess.run(
                 ["adb", "connect", connection_string],
                 capture_output=True,
                 text=True,
-                check=True
+                check=True,
+                **kwargs
             )
             
             output = result.stdout + result.stderr
@@ -330,12 +361,17 @@ class ScrcpyController:
             cmd = ["adb", "disconnect"]
             if ip_address:
                 cmd.append(ip_address)
+            
+            kwargs = {}
+            if self.system == 'Windows':
+                kwargs['creationflags'] = subprocess.CREATE_NO_WINDOW
                 
             result = subprocess.run(
                 cmd,
                 capture_output=True,
                 text=True,
-                check=True
+                check=True,
+                **kwargs
             )
             
             return True, result.stdout
@@ -371,8 +407,12 @@ class ScrcpyController:
             cmd.extend(["exec-out", "screencap", "-p"])
             
             # 执行命令并将输出重定向到文件
+            kwargs = {}
+            if self.system == 'Windows':
+                kwargs['creationflags'] = subprocess.CREATE_NO_WINDOW
+                
             with open(save_path, "wb") as f:
-                subprocess.run(cmd, stdout=f, check=True)
+                subprocess.run(cmd, stdout=f, check=True, **kwargs)
                 
             return True, save_path
         except Exception as e:
@@ -397,21 +437,25 @@ class ScrcpyController:
         
         if not device_id:
             return info
+        
+        kwargs = {}
+        if self.system == 'Windows':
+            kwargs['creationflags'] = subprocess.CREATE_NO_WINDOW
             
         try:
             # 获取设备型号
             model_cmd = ["adb", "-s", device_id, "shell", "getprop", "ro.product.model"]
-            model_result = subprocess.run(model_cmd, capture_output=True, text=True, check=True)
+            model_result = subprocess.run(model_cmd, capture_output=True, text=True, check=True, **kwargs)
             info["model"] = model_result.stdout.strip()
             
             # 获取安卓版本
             version_cmd = ["adb", "-s", device_id, "shell", "getprop", "ro.build.version.release"]
-            version_result = subprocess.run(version_cmd, capture_output=True, text=True, check=True)
+            version_result = subprocess.run(version_cmd, capture_output=True, text=True, check=True, **kwargs)
             info["android_version"] = version_result.stdout.strip()
             
             # 获取屏幕分辨率
             res_cmd = ["adb", "-s", device_id, "shell", "wm", "size"]
-            res_result = subprocess.run(res_cmd, capture_output=True, text=True, check=True)
+            res_result = subprocess.run(res_cmd, capture_output=True, text=True, check=True, **kwargs)
             res_output = res_result.stdout.strip()
             res_match = re.search(r'Physical size: (\d+x\d+)', res_output)
             if res_match:
@@ -450,12 +494,17 @@ class ScrcpyController:
             
             # 执行命令
             try:
+                kwargs = {}
+                if self.system == 'Windows':
+                    kwargs['creationflags'] = subprocess.CREATE_NO_WINDOW
+                    
                 result = subprocess.run(
                     full_cmd,
                     capture_output=True,
                     text=True,
                     check=False,  # 修改为False，以便捕获错误但继续执行
-                    timeout=15  # 添加超时时间，防止命令卡住
+                    timeout=15,  # 添加超时时间，防止命令卡住
+                    **kwargs
                 )
                 
                 # 检查命令是否成功执行
@@ -502,8 +551,12 @@ class ScrcpyController:
             str: 设备品牌名称
         """
         try:
+            kwargs = {}
+            if self.system == 'Windows':
+                kwargs['creationflags'] = subprocess.CREATE_NO_WINDOW
+                
             cmd = ["adb", "-s", device_id, "shell", "getprop", "ro.product.brand"]
-            result = subprocess.run(cmd, capture_output=True, text=True, check=False)
+            result = subprocess.run(cmd, capture_output=True, text=True, check=False, **kwargs)
             if result.returncode == 0:
                 return result.stdout.strip()
             return "未知品牌"
@@ -529,23 +582,27 @@ class ScrcpyController:
         
         if not device_id:
             return info
+        
+        kwargs = {}
+        if self.system == 'Windows':
+            kwargs['creationflags'] = subprocess.CREATE_NO_WINDOW
             
         try:
             # 获取品牌
             brand_cmd = ["adb", "-s", device_id, "shell", "getprop", "ro.product.brand"]
-            brand_result = subprocess.run(brand_cmd, capture_output=True, text=True, check=False)
+            brand_result = subprocess.run(brand_cmd, capture_output=True, text=True, check=False, **kwargs)
             if brand_result.returncode == 0:
                 info["brand"] = brand_result.stdout.strip()
                 
             # 获取型号
             model_cmd = ["adb", "-s", device_id, "shell", "getprop", "ro.product.model"]
-            model_result = subprocess.run(model_cmd, capture_output=True, text=True, check=False)
+            model_result = subprocess.run(model_cmd, capture_output=True, text=True, check=False, **kwargs)
             if model_result.returncode == 0:
                 info["model"] = model_result.stdout.strip()
                 
             # 获取Android版本
             android_cmd = ["adb", "-s", device_id, "shell", "getprop", "ro.build.version.release"]
-            android_result = subprocess.run(android_cmd, capture_output=True, text=True, check=False)
+            android_result = subprocess.run(android_cmd, capture_output=True, text=True, check=False, **kwargs)
             if android_result.returncode == 0:
                 info["android"] = android_result.stdout.strip()
                 

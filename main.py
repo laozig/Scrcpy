@@ -23,6 +23,9 @@ class ScrcpyUI(QMainWindow):
         self.adb_path = self.find_adb_path()  # 自动查找ADB路径
         self.scrcpy_path = self.find_scrcpy_path()  # 自动查找scrcpy路径
         
+        # 设置应用图标
+        self.set_application_icon()
+        
         # 设备进程字典，用于跟踪多个设备的scrcpy进程
         self.device_processes = {}
         
@@ -59,6 +62,33 @@ class ScrcpyUI(QMainWindow):
         self.timer.timeout.connect(self.check_devices)
         self.timer.start(3000)  # 每3秒检查一次设备
         
+    def set_application_icon(self):
+        """设置应用程序图标"""
+        # 尝试查找图标文件
+        icon_paths = [
+            "1.ico",                       # 当前目录
+            os.path.join(os.getcwd(), "1.ico"),  # 完整路径
+            os.path.join(os.path.dirname(os.path.abspath(__file__)), "1.ico"),  # 脚本目录
+            os.path.join(os.path.dirname(sys.executable), "1.ico"),  # 可执行文件目录
+        ]
+        
+        # 备选图标 - 使用BMP文件
+        bmp_paths = [path.replace(".ico", ".bmp") for path in icon_paths]
+        
+        # 尝试加载ICO图标
+        for icon_path in icon_paths + bmp_paths:
+            if os.path.exists(icon_path):
+                try:
+                    app_icon = QIcon(icon_path)
+                    if not app_icon.isNull():
+                        self.setWindowIcon(app_icon)
+                        print(f"已设置窗口图标: {icon_path}")
+                        return
+                except Exception as e:
+                    print(f"加载图标失败: {e}")
+        
+        print("没有找到有效的图标文件")
+
     def apply_dark_theme(self):
         """应用柔和的中性主题"""
         palette = QPalette()
@@ -231,87 +261,113 @@ class ScrcpyUI(QMainWindow):
         """)
         
     def find_adb_path(self):
-        """尝试查找ADB路径"""
-        # 从环境变量PATH中查找
+        """查找adb路径"""
         try:
-            if os.name == 'nt':  # Windows
-                result = subprocess.run('where adb', shell=True, capture_output=True, text=True)
-                if result.returncode == 0 and result.stdout.strip():
-                    return result.stdout.strip().split('\n')[0]
-            else:  # Linux/macOS
-                result = subprocess.run('which adb', shell=True, capture_output=True, text=True)
-                if result.returncode == 0 and result.stdout.strip():
-                    return result.stdout.strip()
-        except Exception:
-            pass
+            # 尝试通过环境变量PATH查找
+            if os.name == 'nt':
+                startupinfo = subprocess.STARTUPINFO()
+                startupinfo.dwFlags |= subprocess.STARTF_USESHOWWINDOW
+                creationflags = subprocess.CREATE_NO_WINDOW
+                # 在Windows下尝试查找
+                result = subprocess.run(['where', 'adb'], 
+                                       capture_output=True, 
+                                       text=True, 
+                                       check=False,
+                                       startupinfo=startupinfo,
+                                       creationflags=creationflags)
+            else:
+                # 在Linux和macOS下查找
+                result = subprocess.run(['which', 'adb'], 
+                                       capture_output=True, 
+                                       text=True, 
+                                       check=False)
             
-        # 常见的ADB安装路径
-        common_paths = [
-            "adb",  # 默认使用系统PATH中的adb
-            os.path.expanduser("~/platform-tools/adb"),
-            os.path.expanduser("~/Android/Sdk/platform-tools/adb"),
-            "C:\\platform-tools\\adb.exe",
-            "C:\\Android\\Sdk\\platform-tools\\adb.exe",
-            "C:\\Program Files\\Android\\Sdk\\platform-tools\\adb.exe",
-            "C:\\Program Files (x86)\\Android\\Sdk\\platform-tools\\adb.exe",
-        ]
-        
-        for path in common_paths:
-            try:
-                # 检查文件是否存在并可执行
-                if os.path.isfile(path) and os.access(path, os.X_OK):
+            if result.returncode == 0 and result.stdout.strip():
+                return result.stdout.strip()
+            
+            # 如果没有找到，尝试一些常见的路径
+            common_paths = [
+                os.path.join(os.environ.get('LOCALAPPDATA', ''), 'Android', 'Sdk', 'platform-tools', 'adb.exe'),
+                os.path.join(os.environ.get('ANDROID_HOME', ''), 'platform-tools', 'adb.exe'),
+                os.path.join(os.environ.get('ANDROID_SDK_ROOT', ''), 'platform-tools', 'adb.exe'),
+                '/usr/bin/adb',
+                '/usr/local/bin/adb'
+            ]
+            
+            for path in common_paths:
+                if os.path.isfile(path):
                     return path
-            except Exception:
-                continue
                 
-        return "adb"  # 默认返回系统命令
+            # 如果仍然没有找到，返回默认的'adb'命令
+            return 'adb'
+        except Exception as e:
+            self.log(f"查找adb路径出错: {e}")
+            return 'adb'
         
     def find_scrcpy_path(self):
-        """尝试查找scrcpy路径"""
+        """查找scrcpy路径"""
         try:
-            if os.name == 'nt':  # Windows
-                result = subprocess.run('where scrcpy', shell=True, capture_output=True, text=True)
-                if result.returncode == 0 and result.stdout.strip():
-                    return result.stdout.strip().split('\n')[0]
-            else:  # Linux/macOS
-                result = subprocess.run('which scrcpy', shell=True, capture_output=True, text=True)
-                if result.returncode == 0 and result.stdout.strip():
-                    return result.stdout.strip()
-        except Exception:
-            pass
+            # 尝试通过环境变量PATH查找
+            if os.name == 'nt':
+                startupinfo = subprocess.STARTUPINFO()
+                startupinfo.dwFlags |= subprocess.STARTF_USESHOWWINDOW
+                creationflags = subprocess.CREATE_NO_WINDOW
+                # 在Windows下尝试查找
+                result = subprocess.run(['where', 'scrcpy'], 
+                                       capture_output=True, 
+                                       text=True, 
+                                       check=False,
+                                       startupinfo=startupinfo,
+                                       creationflags=creationflags)
+            else:
+                # 在Linux和macOS下查找
+                result = subprocess.run(['which', 'scrcpy'], 
+                                       capture_output=True, 
+                                       text=True, 
+                                       check=False)
             
-        # 常见的scrcpy安装路径
-        common_paths = [
-            "scrcpy",  # 默认使用系统PATH中的scrcpy
-            "C:\\scrcpy\\scrcpy.exe",
-            os.path.expanduser("~/scrcpy/scrcpy"),
-        ]
-        
-        for path in common_paths:
-            try:
-                if os.path.isfile(path) and os.access(path, os.X_OK):
+            if result.returncode == 0 and result.stdout.strip():
+                return result.stdout.strip()
+            
+            # 如果没有找到，尝试一些常见的路径
+            common_paths = [
+                os.path.join(os.environ.get('LOCALAPPDATA', ''), 'scrcpy', 'scrcpy.exe'),
+                os.path.join(os.environ.get('ProgramFiles', ''), 'scrcpy', 'scrcpy.exe'),
+                os.path.join(os.environ.get('ProgramFiles(x86)', ''), 'scrcpy', 'scrcpy.exe'),
+                '/usr/bin/scrcpy',
+                '/usr/local/bin/scrcpy'
+            ]
+            
+            for path in common_paths:
+                if os.path.isfile(path):
                     return path
-            except Exception:
-                continue
                 
-        return "scrcpy"  # 默认返回系统命令
+            # 如果仍然没有找到，返回默认的'scrcpy'命令
+            return 'scrcpy'
+        except Exception as e:
+            self.log(f"查找scrcpy路径出错: {e}")
+            return 'scrcpy'
         
     def check_adb_available(self):
-        """检查ADB是否可用"""
+        """检查adb是否可用"""
         try:
-            self.process.start(self.adb_path, ['version'])
-            self.process.waitForFinished()
-            return self.process.exitCode() == 0
-        except Exception:
+            kwargs = {}
+            if os.name == 'nt':  # Windows
+                kwargs['creationflags'] = subprocess.CREATE_NO_WINDOW
+            subprocess.run([self.adb_path, "version"], capture_output=True, **kwargs)
+            return True
+        except:
             return False
             
     def check_scrcpy_available(self):
         """检查scrcpy是否可用"""
         try:
-            self.process.start(self.scrcpy_path, ['--version'])
-            self.process.waitForFinished()
-            return self.process.exitCode() == 0
-        except Exception:
+            kwargs = {}
+            if os.name == 'nt':  # Windows
+                kwargs['creationflags'] = subprocess.CREATE_NO_WINDOW
+            subprocess.run([self.scrcpy_path, "--version"], capture_output=True, **kwargs)
+            return True
+        except:
             return False
         
     def initUI(self):
@@ -485,26 +541,33 @@ class ScrcpyUI(QMainWindow):
         self.log_text.clear()
             
     def check_devices(self):
-        """检查并更新已连接的设备列表"""
-        # 使用控制器获取设备列表
-        devices = self.controller.get_devices()
-        self.device_combo.clear()
-        
-        found_devices = len(devices) > 0
-        for device_id, model in devices:
-            self.device_combo.addItem(f"{model} ({device_id})", device_id)
-        
-        # 禁用或启用按钮
-        self.usb_btn.setEnabled(found_devices)
-        self.wifi_btn.setEnabled(found_devices)
-        self.connect_all_btn.setEnabled(found_devices and len(devices) > 1)
-        
-        if not found_devices and self.auto_refresh_cb.isChecked():
-            self.log("未检测到设备，请检查设备连接")
-        elif found_devices and not self.device_combo.currentText():
-            self.device_combo.setCurrentIndex(0)
-            self.log(f"检测到 {len(devices)} 个设备")
+        """检查连接的设备并更新设备列表"""
+        try:
+            devices = self.controller.get_devices()
             
+            # 清空当前列表
+            self.device_combo.clear()
+            
+            for device_id, model in devices:
+                self.device_combo.addItem(f"{model} ({device_id})", device_id)
+            
+            # 更新连接按钮状态
+            has_devices = self.device_combo.count() > 0
+            self.usb_btn.setEnabled(has_devices)
+            self.wifi_btn.setEnabled(has_devices)
+            self.connect_all_btn.setEnabled(has_devices and len(devices) > 1)
+            
+            if not has_devices and self.auto_refresh_cb.isChecked():
+                self.log("未检测到设备，请检查设备连接")
+            elif has_devices and not self.device_combo.currentText():
+                self.device_combo.setCurrentIndex(0)
+                self.log(f"检测到 {len(devices)} 个设备")
+            
+            return devices
+        except Exception as e:
+            self.log(f"检查设备出错: {e}")
+            return []
+        
     def start_scrcpy(self):
         """启动scrcpy进程"""
         # 检查是否选择了设备
@@ -850,7 +913,8 @@ class ScrcpyUI(QMainWindow):
                 if os.name == 'nt':  # Windows
                     os.startfile(filename)
                 elif os.name == 'posix':  # Linux/macOS
-                    subprocess.run(['xdg-open', filename], check=False)
+                    kwargs = {}
+                    subprocess.run(['xdg-open', filename], check=False, **kwargs)
         else:
             self.log(f"截图失败: {message}")
             
@@ -901,7 +965,8 @@ class ScrcpyUI(QMainWindow):
                 if os.name == 'nt':  # Windows
                     os.startfile(save_dir)
                 elif os.name == 'posix':  # Linux/macOS
-                    subprocess.run(['xdg-open', save_dir], check=False)
+                    kwargs = {}
+                    subprocess.run(['xdg-open', save_dir], check=False, **kwargs)
             
     def connect_all_devices(self):
         """连接所有检测到的设备"""
@@ -964,6 +1029,27 @@ def main():
     # 设置应用字体
     app_font = QFont("微软雅黑", 9)
     QApplication.setFont(app_font)
+    
+    # 设置应用程序图标
+    icon_path = ""
+    for path in [
+        "1.ico",                       # 当前目录
+        os.path.join(os.getcwd(), "1.ico"),  # 完整路径
+        os.path.join(os.path.dirname(os.path.abspath(__file__)), "1.ico"),  # 脚本目录
+        os.path.join(os.path.dirname(sys.executable), "1.ico"),  # 可执行文件目录
+    ]:
+        if os.path.exists(path):
+            icon_path = path
+            break
+            
+    if icon_path:
+        try:
+            app_icon = QIcon(icon_path)
+            if not app_icon.isNull():
+                app.setWindowIcon(app_icon)
+                print(f"已设置应用程序图标: {icon_path}")
+        except Exception as e:
+            print(f"应用程序图标设置失败: {e}")
     
     # 创建并显示主窗口
     main_window = ScrcpyUI()

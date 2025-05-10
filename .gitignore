@@ -75,4 +75,9 @@ scrcpy_config.json
 *.log
 
 # 个人配置文件可能包含敏感信息
-.env 
+.env
+
+# 图标文件和调试目录
+icon_debug/
+*.ico
+*.bmp 
