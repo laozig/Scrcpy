@@ -52,11 +52,6 @@ def main():
     else:
         print("警告: scrcpy_config.json 文件不存在，打包时将不包含此文件")
     
-    # 添加图标文件作为数据文件
-    if icon_path and os.path.exists(icon_path):
-        add_data_args.append(f"--add-data={icon_path};.")
-        print(f"将图标文件 {icon_path} 添加到数据文件")
-    
     # 使用spec文件进行打包，这样更可靠
     if os.path.exists("ScrcpyGUI.spec"):
         print("找到.spec文件，将使用它进行打包")
@@ -106,47 +101,23 @@ def main():
     if os.path.exists(exe_path):
         print(f"\n打包完成！可执行文件位于 {exe_path} (大小: {os.path.getsize(exe_path)/1024/1024:.2f} MB)")
         
-        # 复制图标文件到dist目录，确保文件图标能够显示
-        if icon_path and os.path.exists(icon_path):
+        # 清理图标文件如果存在
+        dist_icon_path = os.path.join(dist_dir, icon_path)
+        if os.path.exists(dist_icon_path):
             try:
-                # 复制图标文件
-                dist_icon_path = os.path.join(dist_dir, icon_path)
-                shutil.copy2(icon_path, dist_icon_path)
-                print(f"已复制图标文件 {icon_path} 到 {dist_dir} 目录")
-                
-                # 创建快捷方式 - 确保图标能在文件浏览器中显示
-                try:
-                    # 创建VBS脚本来创建快捷方式
-                    vbs_content = f"""
-Set oWS = WScript.CreateObject("WScript.Shell")
-sLinkFile = "{dist_dir}\\ScrcpyGUI.lnk"
-Set oLink = oWS.CreateShortcut(sLinkFile)
-oLink.TargetPath = "{exe_path}"
-oLink.IconLocation = "{dist_icon_path}"
-oLink.Save
-                    """
-                    
-                    vbs_path = os.path.join(dist_dir, "create_shortcut.vbs")
-                    with open(vbs_path, "w") as vbs_file:
-                        vbs_file.write(vbs_content)
-                    
-                    # 执行VBS脚本创建快捷方式
-                    try:
-                        print(f"执行脚本: {vbs_path}")
-                        subprocess.call(["cscript", "//nologo", vbs_path])
-                        print("已创建带图标的快捷方式")
-                    except Exception as e:
-                        print(f"执行VBS脚本失败: {e}")
-                    
-                    # 删除VBS脚本
-                    if os.path.exists(vbs_path):
-                        os.remove(vbs_path)
-                        print("已清理VBS脚本")
-                    
-                except Exception as e:
-                    print(f"创建快捷方式失败: {e}")
+                os.remove(dist_icon_path)
+                print(f"已清理图标文件 {dist_icon_path}")
             except Exception as e:
-                print(f"复制图标文件失败: {e}")
+                print(f"清理图标文件失败: {e}")
+                
+        # 清理快捷方式如果存在
+        shortcut_path = os.path.join(dist_dir, "ScrcpyGUI.lnk")
+        if os.path.exists(shortcut_path):
+            try:
+                os.remove(shortcut_path)
+                print(f"已清理快捷方式 {shortcut_path}")
+            except Exception as e:
+                print(f"清理快捷方式失败: {e}")
     else:
         print("\n警告: 可执行文件未创建!")
     
