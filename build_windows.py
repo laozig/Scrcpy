@@ -93,19 +93,10 @@ def main():
         print("  pip install --upgrade pyinstaller")
         return
     
-    # 如果打包成功，检查是否有备用图标格式
+    # 如果打包成功，检查可执行文件
     exe_path = os.path.join("dist", "ScrcpyGUI.exe")
     if os.path.exists(exe_path):
         print(f"\n打包完成！可执行文件位于 {exe_path} (大小: {os.path.getsize(exe_path)/1024/1024:.2f} MB)")
-        
-        # 尝试将BMP图标复制到dist目录，某些Windows环境可能会用到
-        bmp_icon = "1.bmp"
-        if os.path.exists(bmp_icon):
-            try:
-                shutil.copy2(bmp_icon, os.path.join("dist", bmp_icon))
-                print(f"已复制备用图标 {bmp_icon} 到dist目录")
-            except:
-                pass
     else:
         print("\n警告: 可执行文件未创建!")
     

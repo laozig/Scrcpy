@@ -7,6 +7,54 @@
 from PIL import Image, ImageDraw
 import os
 import sys
+import io
+import base64
+
+def get_icon_bytes():
+    """
+    创建图标并返回图标的字节数据
+    这样可以在应用程序内部直接使用图标数据，不需要依赖外部文件
+    """
+    # 创建尺寸 - 对Windows 特别重要的是16x16, 32x32和48x48
+    sizes = [16, 32, 48, 64, 128, 256]
+    images = []
+    
+    # 为每个尺寸创建图标
+    for size in sizes:
+        # 创建画布，使用RGBA模式支持透明度
+        image = Image.new('RGBA', (size, size), color=(0, 0, 0, 0))
+        draw = ImageDraw.Draw(image)
+        
+        # 绘制圆形背景 - 使用鲜艳的绿色作为测试颜色
+        margin = int(size * 0.1)
+        draw.ellipse([(margin, margin), (size - margin, size - margin)], 
+                     fill=(46, 204, 113, 255))  # 鲜艳的绿色背景
+        
+        # 绘制一个简单的"S"形状
+        width = int(size * 0.5)
+        height = int(size * 0.6)
+        x_center = size // 2
+        y_center = size // 2
+        stroke_width = max(1, int(size * 0.15))
+        
+        # S 形状的点
+        points = [
+            (x_center - width//2, y_center - height//3),
+            (x_center + width//2, y_center - height//2),
+            (x_center - width//2, y_center + height//3),
+            (x_center + width//2, y_center + height//2)
+        ]
+        draw.line(points, fill=(255, 255, 255, 255), width=stroke_width)
+        
+        # 添加到图像列表
+        images.append(image)
+    
+    # 将图标保存到字节流中
+    icon_bytes = io.BytesIO()
+    images[0].save(icon_bytes, format='ICO', sizes=[(s, s) for s in sizes], 
+                   append_images=images[1:])
+    icon_bytes.seek(0)
+    return icon_bytes.read()
 
 def create_simple_icon(output_path="1.ico"):
     """
@@ -84,14 +132,6 @@ def create_simple_icon(output_path="1.ico"):
                     print(f"所有方法都失败: {e3}")
                     return None
         
-        # 创建一个备用BMP格式的图标（某些Windows应用更喜欢这种格式）
-        try:
-            bmp_path = output_path.replace('.ico', '.bmp')
-            images[3].convert('RGB').save(bmp_path)  # 64x64 BMP
-            print(f"已创建备用BMP图标: {bmp_path}")
-        except:
-            pass
-        
         print(f"图标文件已创建: {os.path.abspath(output_path)}")
         print(f"图标文件大小: {os.path.getsize(output_path)} 字节")
         return os.path.abspath(output_path)
@@ -99,6 +139,13 @@ def create_simple_icon(output_path="1.ico"):
     except Exception as e:
         print(f"创建图标时发生错误: {e}")
         return None
+
+def get_icon_base64():
+    """
+    获取图标的Base64编码字符串，方便在代码中直接使用
+    """
+    icon_bytes = get_icon_bytes()
+    return base64.b64encode(icon_bytes).decode('utf-8')
 
 if __name__ == "__main__":
     # 创建图标文件

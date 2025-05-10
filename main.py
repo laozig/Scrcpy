@@ -10,7 +10,7 @@ from PyQt5.QtWidgets import (
     QAction, QMenu, QMenuBar, QFrame, QCheckBox, QGroupBox, QGridLayout
 )
 from PyQt5.QtCore import Qt, QProcess, QTimer
-from PyQt5.QtGui import QIcon, QFont, QPalette, QColor
+from PyQt5.QtGui import QIcon, QFont, QPalette, QColor, QPixmap
 
 from scrcpy_controller import ScrcpyController
 
@@ -64,30 +64,60 @@ class ScrcpyUI(QMainWindow):
         
     def set_application_icon(self):
         """设置应用程序图标"""
-        # 尝试查找图标文件
-        icon_paths = [
-            "1.ico",                       # 当前目录
-            os.path.join(os.getcwd(), "1.ico"),  # 完整路径
-            os.path.join(os.path.dirname(os.path.abspath(__file__)), "1.ico"),  # 脚本目录
-            os.path.join(os.path.dirname(sys.executable), "1.ico"),  # 可执行文件目录
-        ]
-        
-        # 备选图标 - 使用BMP文件
-        bmp_paths = [path.replace(".ico", ".bmp") for path in icon_paths]
-        
-        # 尝试加载ICO图标
-        for icon_path in icon_paths + bmp_paths:
-            if os.path.exists(icon_path):
-                try:
-                    app_icon = QIcon(icon_path)
-                    if not app_icon.isNull():
+        try:
+            # 首先尝试从create_icon模块获取图标字节
+            try:
+                import create_icon
+                import io
+                from PyQt5.QtGui import QPixmap
+                
+                # 从字节直接创建图标
+                icon_bytes = create_icon.get_icon_bytes()
+                if icon_bytes:
+                    pixmap = QPixmap()
+                    pixmap.loadFromData(icon_bytes)
+                    if not pixmap.isNull():
+                        app_icon = QIcon(pixmap)
                         self.setWindowIcon(app_icon)
-                        print(f"已设置窗口图标: {icon_path}")
+                        print("已设置内嵌图标")
                         return
-                except Exception as e:
-                    print(f"加载图标失败: {e}")
+            except Exception as e:
+                print(f"无法加载内嵌图标: {e}")
+                
+            # 如果内嵌图标不可用，尝试查找图标文件
+            icon_paths = [
+                "1.ico",                       # 当前目录
+                os.path.join(os.getcwd(), "1.ico"),  # 完整路径
+                os.path.join(os.path.dirname(os.path.abspath(__file__)), "1.ico"),  # 脚本目录
+                os.path.join(os.path.dirname(sys.executable), "1.ico"),  # 可执行文件目录
+            ]
+            
+            # 尝试加载ICO图标
+            for icon_path in icon_paths:
+                if os.path.exists(icon_path):
+                    try:
+                        app_icon = QIcon(icon_path)
+                        if not app_icon.isNull():
+                            self.setWindowIcon(app_icon)
+                            print(f"已设置窗口图标: {icon_path}")
+                            return
+                    except Exception as e:
+                        print(f"加载图标失败: {e}")
+            
+            print("没有找到有效的图标文件")
+            
+            # 最后尝试生成一个新的图标
+            try:
+                import create_icon
+                create_icon.create_simple_icon()
+                app_icon = QIcon("1.ico")
+                self.setWindowIcon(app_icon)
+                print("已设置新生成的图标")
+            except Exception as e:
+                print(f"生成图标失败: {e}")
         
-        print("没有找到有效的图标文件")
+        except Exception as e:
+            print(f"设置图标过程中出错: {e}")
 
     def apply_dark_theme(self):
         """应用柔和的中性主题"""
