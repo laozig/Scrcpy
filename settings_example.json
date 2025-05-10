@@ -1,0 +1,20 @@
+{
+  "selected_device": "",
+  "resolution": "1280:720",
+  "bit_rate": "8M",
+  "max_fps": "60",
+  "record": false,
+  "record_path": "",
+  "fullscreen": false,
+  "no_control": false,
+  "disable_clipboard": false,
+  "window_title": "Scrcpy GUI",
+  "always_on_top": false,
+  "device_id": "",
+  "max_resolution": "1920",
+  "language": "zh_CN",
+  "auto_filename": true,
+  "last_ip": "",
+  "last_port": "5555",
+  "custom_params": ""
+} 

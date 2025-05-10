@@ -1,0 +1,44 @@
+# Python缓存文件
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Python虚拟环境
+.venv/
+venv/
+ENV/
+
+# 备份文件
+backup/
+*.bak
+*.backup
+*.old
+
+# IDE和编辑器文件
+.idea/
+.vscode/
+*.sublime-project
+*.sublime-workspace
+
+# 系统文件
+.DS_Store
+Thumbs.db
+
+# 日志文件
+*.log
+
+# 本地配置文件
+scrcpy_config.json
+
+# 临时文件
+temp/
+tmp/
+
+# 截图和录屏文件
+screenshot_*.png
+record_*.mp4
+
+# 分发文件
+dist/
+build/
+*.spec 
