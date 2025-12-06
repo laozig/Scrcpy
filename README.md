@@ -8,7 +8,7 @@
 
 ## 中文
 
-![image1](demo.png)
+
 ![fjdxkZUSQHcuwalQ66LRxSlY49pFaucf.webp](https://cdn.nodeimage.com/i/fjdxkZUSQHcuwalQ66LRxSlY49pFaucf.webp)
 ![JQurTGShLIpZ6fctNmkXUvXPWORfq2lY.webp](https://cdn.nodeimage.com/i/JQurTGShLIpZ6fctNmkXUvXPWORfq2lY.webp)
 ### 主要功能
