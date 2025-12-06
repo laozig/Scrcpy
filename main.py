@@ -6,6 +6,7 @@ import os
 import subprocess
 import time
 import math
+from functools import partial
 from PyQt5.QtWidgets import (
     QApplication, QMainWindow, QVBoxLayout, QHBoxLayout, QWidget, QLabel, 
     QComboBox, QPushButton, QLineEdit, QFileDialog, QMessageBox, QTextEdit,
@@ -210,31 +211,16 @@ class ScrcpyUI(QMainWindow):
                 new_text = '\n'.join(lines[-max_lines:])
                 self.log_text.setPlainText(new_text)
             
-            # 更强制的UI更新措施
-            self._force_update_log()
+            # 仅在追加后滚动到底，避免频繁 repaint 卡顿
+            scrollbar = self.log_text.verticalScrollBar()
+            if scrollbar:
+                scrollbar.setValue(scrollbar.maximum())
             
             # 打印到控制台，增加调试信息
             print(f"[{timestamp}] {message}")
         except Exception as e:
             print(f"添加日志时出错: {e}, 消息: {message}")
 
-    def _force_update_log(self):
-        """强制更新日志UI显示"""
-        # 滚动到底部
-        scrollbar = self.log_text.verticalScrollBar()
-        if scrollbar:
-            scrollbar.setValue(scrollbar.maximum())
-        
-        # 强制UI刷新
-        self.log_text.repaint()
-        QApplication.processEvents()
-        
-        # 第二次确保滚动条滚动到底部
-        if scrollbar:
-            QApplication.processEvents()
-            scrollbar.setValue(scrollbar.maximum())
-            QApplication.processEvents()
-        
     def handle_process_finished(self, device_id):
         """处理进程结束事件"""
         if device_id in self.device_processes:
@@ -754,13 +740,14 @@ class ScrcpyUI(QMainWindow):
         self.disable_clipboard_cb = QCheckBox("禁用剪贴板")
         
         # 添加同步群控选项
-        self.sync_control_cb = QCheckBox("同步群控")
-        self.sync_control_cb.setToolTip("开启后，对主控设备的操作将同步到其他设备")
+        self.sync_control_cb = QCheckBox("同步群控（维护中）")
+        self.sync_control_cb.setToolTip("该功能暂未完成，当前版本默认禁用")
+        self.sync_control_cb.setEnabled(False)
         self.sync_control_cb.stateChanged.connect(self.toggle_sync_control)
         
         self.sync_control_device_combo = QComboBox()
         self.sync_control_device_combo.setEnabled(False)
-        self.sync_control_device_combo.setToolTip("选择主控设备")
+        self.sync_control_device_combo.setToolTip("选择主控设备（功能维护中）")
         self.sync_control_device_combo.setMinimumWidth(150)
         
         # 创建群控设置按钮
@@ -1111,29 +1098,53 @@ class ScrcpyUI(QMainWindow):
         else:
             self.log(f"设备 {device_id} 没有运行中的 scrcpy 进程")
             
+    
     def stop_all_scrcpy(self):
         """停止所有scrcpy进程"""
-        device_ids = list(self.device_processes.keys())
-        
-        if not device_ids:
+        if not self.device_processes:
             self.log("没有运行中的 scrcpy 进程")
             return
-            
-        for device_id in device_ids:
-            process = self.device_processes[device_id]
-            if process.state() == QProcess.Running:
-                # 终止进程
-                process.terminate()
-                
-                # 给进程一点时间自行终止
-                if not process.waitForFinished(2000):
-                    # 如果进程没有自行终止，则强制终止
-                    process.kill()
-                    
-        # 清空进程字典
-        self.device_processes.clear()
-        self.log("已停止所有 scrcpy 进程")
-        
+        self._terminate_all_processes()
+        self.log("已停止所有scrcpy进程")
+
+    def _terminate_all_processes(self, timeout_ms=2000):
+        """集中终止当前已知的所有QProcess实例"""
+        if hasattr(self, 'device_processes'):
+            for device_id, process in list(self.device_processes.items()):
+                try:
+                    if process and process.state() == QProcess.Running:
+                        print(f"正在终止设备 {device_id} 的进程...")
+                        try:
+                            process.disconnect()
+                        except Exception:
+                            pass
+                        process.kill()
+                        process.waitForFinished(timeout_ms)
+                        print(f"已终止设备 {device_id} 的进程")
+                except Exception as e:
+                    print(f"终止设备 {device_id} 进程时出错: {e}")
+            self.device_processes.clear()
+
+        if hasattr(self, 'process_tracking'):
+            for i, proc in enumerate(self.process_tracking):
+                try:
+                    if proc and proc.state() == QProcess.Running:
+                        proc.disconnect()
+                        proc.kill()
+                        proc.waitForFinished(timeout_ms)
+                        print(f"已终止跟踪进程#{i}")
+                except Exception as e:
+                    print(f"终止跟踪进程 #{i} 时出错: {e}")
+            self.process_tracking.clear()
+
+        if hasattr(self, 'process') and self.process and self.process.state() == QProcess.Running:
+            try:
+                self.process.disconnect()
+                self.process.kill()
+                self.process.waitForFinished(timeout_ms)
+            except Exception as e:
+                print(f"终止主进程时出错: {e}")
+
     def handle_process_output(self, process, device_id):
         """处理指定进程的标准输出"""
         data = process.readAllStandardOutput().data().decode('utf-8')
@@ -1599,10 +1610,10 @@ class ScrcpyUI(QMainWindow):
                         # 如果创建失败但还有尝试次数，则延迟后再次尝试
                         next_delay = delay_times[attempt_index + 1] - delay_times[attempt_index]
                         self.log(f"设备 {d_id}: 将在 {next_delay/1000} 秒后再次尝试创建控制栏")
-                        QTimer.singleShot(next_delay, lambda: attempt_create_control_bar(d_id, w_title, attempt_index + 1))
+                        QTimer.singleShot(next_delay, partial(attempt_create_control_bar, d_id, w_title, attempt_index + 1))
                 
                 # 启动第一次尝试
-                QTimer.singleShot(delay_times[0], lambda: attempt_create_control_bar(device_id, window_title, 0))
+                QTimer.singleShot(delay_times[0], partial(attempt_create_control_bar, device_id, window_title, 0))
                 
                 # 每个设备启动后稍微等待一下，避免系统资源争用
                 if count < len(devices):
@@ -1632,14 +1643,6 @@ class ScrcpyUI(QMainWindow):
         """显示群控设置对话框"""
         QMessageBox.information(self, "群控功能", "同步群控功能目前处于维护中，将在后续版本中恢复完整功能。")
         self.log("群控功能目前尚未完全实现，敬请期待后续版本")
-
-    def closeEvent(self, event):
-        """窗口关闭事件"""
-        # 停止所有进程
-        self.stop_all_scrcpy()
-        
-        # 接受关闭事件
-        event.accept()
 
 def parse_arguments():
     """解析命令行参数"""
