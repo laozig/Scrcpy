@@ -8,7 +8,9 @@
 
 ## 中文
 
-![image](demo.png)
+![image1](demo.png)
+![fjdxkZUSQHcuwalQ66LRxSlY49pFaucf.webp](https://cdn.nodeimage.com/i/fjdxkZUSQHcuwalQ66LRxSlY49pFaucf.webp)
+![JQurTGShLIpZ6fctNmkXUvXPWORfq2lY.webp](https://cdn.nodeimage.com/i/JQurTGShLIpZ6fctNmkXUvXPWORfq2lY.webp)
 ### 主要功能
 
 - 简单的设备连接和管理
