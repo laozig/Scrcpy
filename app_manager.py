@@ -58,6 +58,7 @@ class AppListThread(QThread):
             
         # 解析应用列表
         package_list = []
+        package_names = []
         lines = result[1].strip().split('\n')
         total_apps = len(lines)
         
@@ -67,7 +68,7 @@ class AppListThread(QThread):
             # 格式: package:com.example.app
             if line.startswith('package:'):
                 package_name = line[8:].strip()
-                
+                package_names.append(package_name)
                 # 默认使用包名最后一部分作为初始显示名称
                 display_name = package_name.split('.')[-1].capitalize()
                 
@@ -78,6 +79,17 @@ class AppListThread(QThread):
                 
                 package_list.append((display_name, package_name))
         
+        # 批量获取应用标签，减少多次 adb 调用
+        if package_names:
+            label_map = self.get_app_labels_bulk(package_names)
+            if label_map:
+                package_list = []
+                for pkg in package_names:
+                    name = label_map.get(pkg)
+                    if not name:
+                        name = pkg.split('.')[-1].capitalize()
+                    package_list.append((name, pkg))
+
         # 按名称排序
         package_list.sort()
         print(f"找到应用数量: {len(package_list)}")
@@ -144,6 +156,44 @@ class AppListThread(QThread):
         except Exception as e:
             print(f"获取应用名称出错: {e}")
             return None
+
+    def get_app_labels_bulk(self, package_names):
+        """通过单次 dumpsys package 批量获取应用标签，提升加载速度"""
+        try:
+            if not package_names:
+                return {}
+            target_set = set(package_names)
+            # 只用一次 dumpsys，尽量减少耗时
+            cmd = "shell dumpsys package packages"
+            result = self.controller.execute_adb_command(cmd, self.device_id)
+            if not result[0] or not result[1]:
+                return {}
+            labels = {}
+            current_pkg = None
+            for line in result[1].splitlines():
+                line = line.strip()
+                if line.startswith("Package [") and "]" in line:
+                    pkg = line.split("Package [", 1)[1].split("]", 1)[0]
+                    current_pkg = pkg if pkg in target_set else None
+                    continue
+                if current_pkg:
+                    # 优先 application-label- 开头（包含本地化），再退回 application-label:
+                    if line.startswith("application-label-") and ":" in line:
+                        label = line.split(":", 1)[1].strip().strip("'\"")
+                        if label:
+                            labels[current_pkg] = label
+                            current_pkg = None
+                            continue
+                    if line.startswith("application-label:"):
+                        label = line.split(":", 1)[1].strip().strip("'\"")
+                        if label:
+                            labels[current_pkg] = label
+                            current_pkg = None
+                            continue
+            return labels
+        except Exception as e:
+            print(f"批量获取应用标签出错: {e}")
+            return {}
 
     def get_default_app_icon(self, package_name):
         """获取应用默认图标"""

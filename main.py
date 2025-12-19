@@ -56,8 +56,10 @@ class ScrcpyUI(QMainWindow):
         self.controlled_devices = []  # 被控设备ID列表
         self.event_monitor = None  # 事件监控器
         
-        # 应用柔和的中性主题
+        # 计算界面缩放，先设置主题再应用尺寸缩放
+        self.ui_scale = self.compute_ui_scale()
         self.apply_dark_theme()
+        self.apply_scale_styles()
         
         self.initUI()
         
@@ -284,6 +286,21 @@ class ScrcpyUI(QMainWindow):
         except Exception as e:
             print(f"设置图标过程中出错: {e}")
 
+    def compute_ui_scale(self):
+        """根据可用屏幕尺寸计算界面缩放因子"""
+        try:
+            screen = QApplication.primaryScreen()
+            avail = screen.availableGeometry() if screen else None
+            if not avail:
+                return 0.9
+            w, h = avail.width(), avail.height()
+            base_w, base_h = 1920, 1080
+            scale = min(w / base_w, h / base_h)
+            # 限制缩放范围，让组件更紧凑一些
+            return max(0.75, min(scale, 1.0))
+        except Exception:
+            return 0.9
+
     def apply_dark_theme(self):
         """应用柔和的中性主题"""
         palette = QPalette()
@@ -471,40 +488,320 @@ class ScrcpyUI(QMainWindow):
                 background-color: #512DA8;
             }
         """)
+    
+    def apply_scale_styles(self):
+        """根据计算的缩放因子微调字体和间距，让组件随屏幕缩放"""
+        scale = getattr(self, 'ui_scale', 1.0)
+        def px(v):
+            return f"{max(1, int(round(v * scale)))}px"
+        font_pt = max(9, int(round(11 * scale)))
+        small_font_pt = max(9, int(round(10 * scale)))
+        style = f"""
+        QWidget {{
+            font-size: {font_pt}pt;
+        }}
+        QPushButton {{
+            padding: {px(4)} {px(10)};
+            min-height: {px(26)};
+        }}
+        QLineEdit, QComboBox {{
+            padding: {px(4)} {px(8)};
+            min-height: {px(26)};
+        }}
+        QGroupBox {{
+            margin-top: {px(8)};
+            padding-top: {px(12)};
+            border-radius: {px(6)};
+        }}
+        QTextEdit {{
+            font-size: {small_font_pt}pt;
+        }}
+        """
+        self.setStyleSheet(self.styleSheet() + "\n" + style)
+    
+    def apply_dark_theme(self):
+        """应用现代浅色主题（覆盖旧样式定义）"""
+        palette = QPalette()
+        background_color = QColor(245, 246, 250)
+        panel_color = QColor(255, 255, 255)
+        text_color = QColor(30, 32, 36)
+        accent = QColor(72, 116, 245)
+
+        palette.setColor(QPalette.Window, background_color)
+        palette.setColor(QPalette.WindowText, text_color)
+        palette.setColor(QPalette.Base, panel_color)
+        palette.setColor(QPalette.AlternateBase, QColor(248, 249, 252))
+        palette.setColor(QPalette.ToolTipBase, panel_color)
+        palette.setColor(QPalette.ToolTipText, text_color)
+        palette.setColor(QPalette.Text, text_color)
+        palette.setColor(QPalette.Disabled, QPalette.Text, QColor(150, 150, 150))
+        palette.setColor(QPalette.Button, panel_color)
+        palette.setColor(QPalette.ButtonText, text_color)
+        palette.setColor(QPalette.Disabled, QPalette.ButtonText, QColor(150, 150, 150))
+        palette.setColor(QPalette.BrightText, Qt.red)
+        palette.setColor(QPalette.Link, accent)
+        palette.setColor(QPalette.Highlight, accent)
+        palette.setColor(QPalette.HighlightedText, Qt.white)
+        self.setPalette(palette)
+
+        self.setStyleSheet("""
+            QGroupBox {
+                border: 1px solid #d9deea;
+                border-radius: 10px;
+                margin-top: 12px;
+                padding-top: 16px;
+                font-weight: 600;
+                background-color: #ffffff;
+            }
+            QGroupBox::title {
+                subcontrol-origin: margin;
+                subcontrol-position: top left;
+                left: 12px;
+                padding: 0 6px;
+                color: #4a74f5;
+            }
+            QPushButton {
+                background-color: #4a74f5;
+                color: #ffffff;
+                border: 1px solid #3d63d6;
+                border-radius: 6px;
+                padding: 6px 14px;
+                font-weight: 600;
+                min-height: 28px;
+            }
+            QPushButton:hover { background-color: #3f66da; }
+            QPushButton:pressed { background-color: #3558c3; }
+            QPushButton:disabled {
+                background-color: #cccccc;
+                color: #7f8797;
+                border: 1px solid #c9cdd6;
+            }
+            QPushButton#usb_btn, QPushButton#wifi_btn {
+                background-color: #43b581;
+                border-color: #369368;
+            }
+            QPushButton#usb_btn:hover, QPushButton#wifi_btn:hover { background-color: #3aa373; }
+            QPushButton#usb_btn:pressed, QPushButton#wifi_btn:pressed { background-color: #318d64; }
+            QPushButton#connect_all_btn {
+                background-color: #ffb74d;
+                border-color: #f29b2c;
+                color: #2f2f2f;
+            }
+            QPushButton#connect_all_btn:hover { background-color: #f9a733; }
+            QPushButton#connect_all_btn:pressed { background-color: #ec961d; }
+            QPushButton#stop_btn {
+                background-color: #ea4335;
+                border-color: #d93224;
+            }
+            QPushButton#stop_btn:hover { background-color: #db3628; }
+            QPushButton#stop_btn:pressed { background-color: #c42a1f; }
+            QPushButton#screenshot_btn {
+                background-color: #4a74f5;
+            }
+            QPushButton#screenshot_btn:hover { background-color: #3f66da; }
+            QPushButton#screenshot_btn:pressed { background-color: #3558c3; }
+            QPushButton#clear_log_btn {
+                background-color: #7a8191;
+                border-color: #6a7080;
+            }
+            QPushButton#clear_log_btn:hover { background-color: #6c7384; }
+            QPushButton#clear_log_btn:pressed { background-color: #5d6373; }
+            QLineEdit, QComboBox {
+                border: 1px solid #d9deea;
+                border-radius: 6px;
+                padding: 6px 10px;
+                background-color: #ffffff;
+                color: #1e2024;
+                min-height: 30px;
+                selection-background-color: #e6edff;
+            }
+            QComboBox::drop-down {
+                subcontrol-origin: padding;
+                subcontrol-position: center right;
+                width: 22px;
+                border-left: 1px solid #d9deea;
+            }
+            QComboBox QAbstractItemView {
+                border: 1px solid #d9deea;
+                background-color: #ffffff;
+                selection-background-color: #e6edff;
+                selection-color: #1e2024;
+            }
+            QCheckBox { color: #1e2024; spacing: 8px; }
+            QCheckBox::indicator {
+                width: 18px;
+                height: 18px;
+                border: 1px solid #d9deea;
+                border-radius: 4px;
+                background-color: #ffffff;
+            }
+            QCheckBox::indicator:checked {
+                background-color: #4a74f5;
+                border-color: #4a74f5;
+            }
+            QCheckBox::indicator:hover { border-color: #4a74f5; }
+            QLineEdit:focus, QComboBox:focus, QTextEdit:focus {
+                border: 1px solid #4a74f5;
+                outline: none;
+                box-shadow: 0 0 0 3px rgba(74, 116, 245, 0.18);
+            }
+            QTextEdit {
+                border: 1px solid #d0d0d0;
+                border-radius: 6px;
+                padding: 8px;
+                background-color: #fdfdfe;
+                color: #333333;
+            }
+            QListWidget {
+                border: 1px solid #d0d0d0;
+                border-radius: 6px;
+                padding: 4px;
+            }
+            QListWidget::item:selected {
+                background-color: #e6edff;
+                color: #1e2024;
+            }
+            QMenuBar {
+                background-color: #f5f5f5;
+                border-bottom: 1px solid #d9deea;
+            }
+            QMenuBar::item { padding: 4px 12px; }
+            QMenuBar::item:selected { background: #e6edff; }
+            QMenu {
+                border: 1px solid #d9deea;
+                background-color: #ffffff;
+            }
+            QMenu::item:selected { background-color: #e6edff; }
+            QFrame#line {
+                background-color: #d9deea;
+                max-height: 1px;
+            }
+            QLabel#title {
+                color: #4a74f5;
+                font-size: 17px;
+                font-weight: 700;
+            }
+            QStatusBar {
+                background-color: #f5f5f5;
+                border-top: 1px solid #d9deea;
+            }
+            QPushButton#about_btn {
+                background-color: #5f6dd8;
+                border-color: #4d59bd;
+            }
+            QPushButton#about_btn:hover { background-color: #525fc2; }
+            QPushButton#about_btn:pressed { background-color: #4552aa; }
+            QScrollBar:vertical {
+                border: none;
+                background: #f0f1f5;
+                width: 10px;
+                margin: 0px;
+            }
+            QScrollBar::handle:vertical {
+                background: #c9cdd6;
+                min-height: 20px;
+                border-radius: 5px;
+            }
+            QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical {
+                height: 0px;
+            }
+            /* 导航按钮 */
+            QPushButton#home_btn, QPushButton#back_btn, QPushButton#menu_btn {
+                background-color: #5f6dd8;
+                color: white;
+                font-weight: 600;
+                padding: 8px 14px;
+                min-width: 96px;
+                border-radius: 6px;
+                border: 1px solid #4d59bd;
+                margin: 2px;
+            }
+            QPushButton#home_btn:hover, QPushButton#back_btn:hover, QPushButton#menu_btn:hover {
+                background-color: #525fc2;
+            }
+            QPushButton#home_btn:pressed, QPushButton#back_btn:pressed, QPushButton#menu_btn:pressed {
+                background-color: #4552aa;
+            }
+        """)
         
     def find_adb_path(self):
-        """查找adb路径"""
+        """查找adb路径，优先使用程序目录中的adb"""
         try:
-            # 检查是否是PyInstaller打包环境
+            def dedup_repeated_dir(path):
+                """Collapse duplicated parent folders like foo/foo/file.ext"""
+                norm = os.path.normpath(path)
+                parts = norm.split(os.sep)
+                if len(parts) >= 4 and parts[-2].lower() == parts[-3].lower():
+                    parts.pop(-3)
+                    norm = os.sep.join(parts)
+                return norm
+
+            def find_local_adb(base_dir):
+                """Search for adb under base_dir (depth limited)"""
+                if not base_dir or not os.path.isdir(base_dir):
+                    return None
+                candidates = ("adb.exe", "adb")
+                # Check root first
+                for name in candidates:
+                    root_candidate = os.path.join(base_dir, name)
+                    if os.path.isfile(root_candidate):
+                        return dedup_repeated_dir(root_candidate)
+                # Walk shallowly to avoid huge trees
+                max_depth = 2
+                for root, dirs, files in os.walk(base_dir):
+                    depth = os.path.relpath(root, base_dir).count(os.sep)
+                    if depth > max_depth:
+                        dirs[:] = []
+                        continue
+                    dirs[:] = [d for d in dirs if d not in (".git", ".venv", "__pycache__")]
+                    for name in candidates:
+                        candidate = os.path.join(root, name)
+                        if os.path.isfile(candidate):
+                            return dedup_repeated_dir(candidate)
+                return None
+
+            # PyInstaller packaged env: search inside bundle directory
             if getattr(sys, 'frozen', False):
-                # 在PyInstaller环境中，使用_MEIPASS查找打包的资源目录
                 base_path = getattr(sys, '_MEIPASS', os.path.dirname(os.path.abspath(__file__)))
-                adb_path = os.path.join(base_path, 'scrcpy-win64-v3.2', 'adb.exe')
-                if os.path.isfile(adb_path):
-                    self.log(f"使用打包的adb: {adb_path}")
-                    return adb_path
+                bundled_adb = find_local_adb(base_path)
+                if bundled_adb:
+                    self.log(f"使用打包的adb: {bundled_adb}")
+                    return bundled_adb
             
-            # 首先检查项目目录下的scrcpy-win64-v3.2文件夹中的adb
-            local_adb_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), 
-                                          'scrcpy-win64-v3.2', 'adb.exe')
-            if os.path.isfile(local_adb_path):
-                self.log(f"使用本地adb: {local_adb_path}")
-                return local_adb_path
+            # 首选运行目录，其次脚本目录（不固定文件夹名）
+            search_roots = []
+            cwd = os.getcwd()
+            if os.path.isdir(cwd):
+                search_roots.append(cwd)
+            script_dir = os.path.dirname(os.path.abspath(__file__))
+            if os.path.isdir(script_dir) and script_dir not in search_roots:
+                search_roots.append(script_dir)
+
+            for root in search_roots:
+                local_adb = find_local_adb(root)
+                if local_adb:
+                    self.log(f"使用本地adb: {local_adb}")
+                    return local_adb
                 
-            # 如果本地没有，再检查环境变量
+            # 环境变量 PATH
             if os.name == 'nt':
                 startupinfo = subprocess.STARTUPINFO()
                 startupinfo.dwFlags |= subprocess.STARTF_USESHOWWINDOW
                 creationflags = subprocess.CREATE_NO_WINDOW
-                result = subprocess.run(['where', 'adb'], 
-                                      capture_output=True, 
-                                      text=True, 
-                                      check=False,
-                                      startupinfo=startupinfo,
-                                      creationflags=creationflags)
-                
-                if result.returncode == 0 and result.stdout.strip():
-                    return result.stdout.strip()
+                result = subprocess.run(
+                    ['where', 'adb'],
+                    capture_output=True,
+                    text=True,
+                    check=False,
+                    startupinfo=startupinfo,
+                    creationflags=creationflags
+                )
+
+                if result.returncode == 0 and result.stdout:
+                    for line in result.stdout.splitlines():
+                        adb_candidate = line.strip()
+                        if adb_candidate:
+                            return adb_candidate
             else:
                 # 在Linux和macOS下查找
                 result = subprocess.run(['which', 'adb'], 
@@ -515,7 +812,7 @@ class ScrcpyUI(QMainWindow):
                 if result.returncode == 0 and result.stdout.strip():
                     return result.stdout.strip()
             
-            # 如果没有找到，尝试一些常见的路径
+            # 常见路径兜底
             common_paths = [
                 os.path.join(os.environ.get('LOCALAPPDATA', ''), 'Android', 'sdk', 'platform-tools', 'adb.exe'),
                 os.path.join(os.environ.get('ProgramFiles', ''), 'Android', 'sdk', 'platform-tools', 'adb.exe'),
@@ -528,7 +825,7 @@ class ScrcpyUI(QMainWindow):
                 if os.path.isfile(path):
                     return path
             
-            # 如果仍然没有找到，返回默认的'adb'命令
+            # 仍然没有找到时返回默认命令名
             return 'adb'
         except Exception as e:
             self.log(f"查找adb路径出错: {e}")
@@ -537,21 +834,62 @@ class ScrcpyUI(QMainWindow):
     def find_scrcpy_path(self):
         """查找scrcpy路径"""
         try:
+            def dedup_repeated_dir(path):
+                """Collapse duplicated parent folders like foo/foo/file.ext"""
+                norm = os.path.normpath(path)
+                parts = norm.split(os.sep)
+                if len(parts) >= 4 and parts[-2].lower() == parts[-3].lower():
+                    parts.pop(-3)
+                    norm = os.sep.join(parts)
+                return norm
+
+            def find_local_scrcpy(base_dir):
+                """Search for scrcpy under base_dir (depth limited)"""
+                if not base_dir or not os.path.isdir(base_dir):
+                    return None
+                candidates = ("scrcpy.exe", "scrcpy")
+                # Check root first
+                for name in candidates:
+                    root_candidate = os.path.join(base_dir, name)
+                    if os.path.isfile(root_candidate):
+                        return dedup_repeated_dir(root_candidate)
+                # Walk shallowly to avoid huge trees
+                max_depth = 2
+                for root, dirs, files in os.walk(base_dir):
+                    depth = os.path.relpath(root, base_dir).count(os.sep)
+                    if depth > max_depth:
+                        dirs[:] = []
+                        continue
+                    dirs[:] = [d for d in dirs if d not in (".git", ".venv", "__pycache__")]
+                    for name in candidates:
+                        candidate = os.path.join(root, name)
+                        if os.path.isfile(candidate):
+                            return dedup_repeated_dir(candidate)
+                return None
+
             # 检查是否是PyInstaller打包环境
             if getattr(sys, 'frozen', False):
                 # 在PyInstaller环境中，使用_MEIPASS查找打包的资源目录
                 base_path = getattr(sys, '_MEIPASS', os.path.dirname(os.path.abspath(__file__)))
-                scrcpy_path = os.path.join(base_path, 'scrcpy-win64-v3.2', 'scrcpy.exe')
-                if os.path.isfile(scrcpy_path):
-                    self.log(f"使用打包的scrcpy: {scrcpy_path}")
-                    return scrcpy_path
+                bundled_scrcpy = find_local_scrcpy(base_path)
+                if bundled_scrcpy:
+                    self.log(f"使用打包的scrcpy: {bundled_scrcpy}")
+                    return bundled_scrcpy
             
-            # 首先检查项目目录下的scrcpy-win64-v3.2文件夹
-            local_scrcpy_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), 
-                                          'scrcpy-win64-v3.2', 'scrcpy.exe')
-            if os.path.isfile(local_scrcpy_path):
-                self.log(f"使用本地scrcpy: {local_scrcpy_path}")
-                return local_scrcpy_path
+            # 首选运行目录，其次脚本目录（不固定文件夹名）
+            search_roots = []
+            cwd = os.getcwd()
+            if os.path.isdir(cwd):
+                search_roots.append(cwd)
+            script_dir = os.path.dirname(os.path.abspath(__file__))
+            if os.path.isdir(script_dir) and script_dir not in search_roots:
+                search_roots.append(script_dir)
+
+            for root in search_roots:
+                local_scrcpy = find_local_scrcpy(root)
+                if local_scrcpy:
+                    self.log(f"使用本地scrcpy: {local_scrcpy}")
+                    return local_scrcpy
                 
             # 如果本地没有，才尝试通过环境变量PATH查找
             if os.name == 'nt':
@@ -559,15 +897,20 @@ class ScrcpyUI(QMainWindow):
                 startupinfo.dwFlags |= subprocess.STARTF_USESHOWWINDOW
                 creationflags = subprocess.CREATE_NO_WINDOW
                 # 在Windows下尝试查找
-                result = subprocess.run(['where', 'scrcpy'], 
-                                       capture_output=True, 
-                                       text=True, 
-                                       check=False,
-                                       startupinfo=startupinfo,
-                                       creationflags=creationflags)
+                result = subprocess.run(
+                    ['where', 'scrcpy'], 
+                    capture_output=True, 
+                    text=True, 
+                    check=False,
+                    startupinfo=startupinfo,
+                    creationflags=creationflags
+                )
                 
-                if result.returncode == 0 and result.stdout.strip():
-                    return result.stdout.strip()
+                if result.returncode == 0 and result.stdout:
+                    for line in result.stdout.splitlines():
+                        scrcpy_candidate = line.strip()
+                        if scrcpy_candidate:
+                            return scrcpy_candidate
             else:
                 # 在Linux和macOS下查找
                 result = subprocess.run(['which', 'scrcpy'], 
@@ -622,8 +965,20 @@ class ScrcpyUI(QMainWindow):
     def initUI(self):
         # 设置窗口
         self.setWindowTitle('Scrcpy GUI - 安卓屏幕控制')
-        self.setGeometry(100, 100, 680, 700)  # 增大窗口尺寸
-        self.setMinimumSize(800, 600)  # 增大最小尺寸
+        # 根据屏幕可用尺寸智能自适应，略微再降低高度
+        screen = QApplication.primaryScreen()
+        avail = screen.availableGeometry() if screen else None
+        base_w, base_h = 800, 590
+        if avail:
+            w = avail.width()
+            h = avail.height()
+            # 大屏减小比例，小屏保持适中
+            frac_w = 0.50 if w < 1920 else 0.42
+            frac_h = 0.52 if h < 1080 else 0.45
+            base_w = max(720, min(int(w * frac_w), 980))
+            base_h = max(540, min(int(h * frac_h), 760))
+        self.resize(base_w, base_h)
+        self.setMinimumSize(680, 520)
         
         # 创建菜单栏
         self.create_menus()
@@ -1019,6 +1374,9 @@ class ScrcpyUI(QMainWindow):
         
         # 添加触摸反馈效果 - 增强用户体验
         cmd.append('--show-touches')
+        
+        # 默认关闭音频，避免设备不支持音频采集时崩溃
+        cmd.append('--no-audio')
         
         # 添加窗口位置参数，避免窗口出现在屏幕边缘
         cmd.extend(['--window-x', '100'])
@@ -1570,6 +1928,9 @@ class ScrcpyUI(QMainWindow):
             window_title = f"Scrcpy - {model} ({device_id})"
             cmd.extend(['--window-title', window_title])
             
+            # 默认关闭音频，避免不支持音频采集时的崩溃
+            cmd.append('--no-audio')
+
             # 添加窗口位置参数，避免所有窗口重叠
             cmd.extend(['--window-x', str(100 + count * 50)])
             cmd.extend(['--window-y', str(100 + count * 50)])
@@ -1661,6 +2022,13 @@ def main():
     if args.version:
         print("Scrcpy GUI v1.0")
         return
+
+    # 高DPI自适应（在创建 QApplication 前设置）
+    try:
+        QApplication.setAttribute(Qt.AA_EnableHighDpiScaling, True)
+        QApplication.setAttribute(Qt.AA_UseHighDpiPixmaps, True)
+    except Exception:
+        pass
 
     app = QApplication(sys.argv)
     

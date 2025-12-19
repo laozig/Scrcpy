@@ -17,12 +17,16 @@ from pathlib import Path
 def build_windows_executable(spec_file=None, one_file=False, debug=False):
     print(f"开始构建Windows可执行文件...")
     
-    # 确定spec文件
+    # 确定spec文件（尝试一组候选，避免固定名称）
     if not spec_file:
-        spec_file = "ScrcpyGUI.spec"
-    
-    if not os.path.exists(spec_file):
-        print(f"错误: 指定的spec文件 '{spec_file}' 不存在")
+        for candidate in ["ScrcpyGUI.spec", "ScrcpyGUI_separate.spec", "ScrcpyGUI_onefile_separate.spec"]:
+            if os.path.exists(candidate):
+                spec_file = candidate
+                print(f"未指定spec，使用找到的文件: {spec_file}")
+                break
+    # 如果用户指定或默认候选不存在，再提示
+    if not spec_file or not os.path.exists(spec_file):
+        print(f"错误: 找不到可用的spec文件（期望之一: ScrcpyGUI.spec / ScrcpyGUI_separate.spec / ScrcpyGUI_onefile_separate.spec）")
         return False
     
     # 构建命令
@@ -128,7 +132,7 @@ def create_zip_archive(archive_name=None):
 
 def main():
     parser = argparse.ArgumentParser(description="Windows平台打包脚本")
-    parser.add_argument("--spec", help="指定spec文件路径", default="ScrcpyGUI.spec")
+    parser.add_argument("--spec", help="指定spec文件路径（不填则自动选择现有spec）", default=None)
     parser.add_argument("--onefile", action="store_true", help="打包为单个文件")
     parser.add_argument("--debug", action="store_true", help="启用调试模式")
     parser.add_argument("--zip", action="store_true", help="创建ZIP归档")
