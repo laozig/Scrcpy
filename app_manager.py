@@ -27,12 +27,15 @@ class AppListThread(QThread):
     loading_progress = pyqtSignal(int, int)  # 当前数量、总数量
     app_icon_loaded = pyqtSignal(str, bytes)  # 包名, 图标字节数据
     
-    def __init__(self, controller, device_id, show_system=False, load_icons=True):
+    def __init__(self, controller, device_id, show_system=False, load_icons=True, icon_prefetch_count=12, sort_by_name=True):
         super().__init__()
         self.controller = controller
         self.device_id = device_id
         self.show_system = show_system
         self.load_icons = load_icons
+        self.icon_prefetch_count = icon_prefetch_count
+        self.sort_by_name = sort_by_name
+        self.icon_prefetch_count = icon_prefetch_count
         
     def run(self):
         # 检查设备ID是否有效
@@ -41,11 +44,11 @@ class AppListThread(QThread):
             self.app_loaded.emit([])
             return
             
-        # 构建获取包列表的命令
+        # 构建获取包列表的命令（优先使用更快的 cmd package）
         if self.show_system:
-            cmd = "shell pm list packages"  # 获取所有应用，包括系统应用
+            cmd = "shell cmd package list packages"
         else:
-            cmd = "shell pm list packages -3"  # 只获取第三方应用
+            cmd = "shell cmd package list packages -3"
 
         print(f"执行命令: adb -s {self.device_id} {cmd}")
         
@@ -90,17 +93,17 @@ class AppListThread(QThread):
                         name = pkg.split('.')[-1].capitalize()
                     package_list.append((name, pkg))
 
-        # 按名称排序
-        package_list.sort()
+        # 排序
+        package_list.sort(key=(lambda x: x[0]) if self.sort_by_name else (lambda x: x[1]))
         print(f"找到应用数量: {len(package_list)}")
         self.app_loaded.emit(package_list)
         
         # 如果需要加载图标，在后台加载
-        if self.load_icons and len(package_list) > 0:
-            # 仅为前30个应用加载图标以提高性能
-            for i, (_, package_name) in enumerate(package_list[:30]):
+        if self.load_icons and len(package_list) > 0 and self.icon_prefetch_count > 0:
+            prefetch = min(self.icon_prefetch_count, len(package_list))
+            for i, (_, package_name) in enumerate(package_list[:prefetch]):
                 # 使用默认图标方法
-                icon_data = self.get_default_app_icon(package_name)
+                icon_data = self.generate_icon_bytes(package_name)
                 if icon_data:
                     self.app_icon_loaded.emit(package_name, icon_data)
                 
@@ -194,6 +197,35 @@ class AppListThread(QThread):
         except Exception as e:
             print(f"批量获取应用标签出错: {e}")
             return {}
+
+    def generate_icon_bytes(self, package_name):
+        """内存生成默认图标，避免临时文件开销"""
+        try:
+            from PIL import Image, ImageDraw, ImageFont
+            import hashlib, io
+
+            hash_hex = hashlib.md5(package_name.encode()).hexdigest()
+            r = int(hash_hex[0:2], 16)
+            g = int(hash_hex[2:4], 16)
+            b = int(hash_hex[4:6], 16)
+
+            img = Image.new('RGBA', (192, 192), color=(255, 255, 255, 0))
+            d = ImageDraw.Draw(img)
+            d.ellipse((0, 0, 192, 192), fill=(r, g, b, 255))
+
+            first_letter = package_name[0].upper()
+            try:
+                font = ImageFont.truetype("arial.ttf", 72)
+                d.text((72, 56), first_letter, fill=(255, 255, 255, 255), font=font)
+            except Exception:
+                d.text((80, 60), first_letter, fill=(255, 255, 255, 255))
+
+            buf = io.BytesIO()
+            img.save(buf, format="PNG")
+            return buf.getvalue()
+        except Exception as e:
+            print(f"生成应用图标出错: {e}")
+            return None
 
     def get_default_app_icon(self, package_name):
         """获取应用默认图标"""
@@ -362,6 +394,18 @@ class AppManagerDialog(QDialog):
         self.show_system_cb.setChecked(False)
         self.show_system_cb.stateChanged.connect(self.reload_apps)
         filter_layout.addWidget(self.show_system_cb)
+
+        self.load_icons_cb = QCheckBox("加载图标")
+        self.load_icons_cb.setChecked(True)
+        self.load_icons_cb.stateChanged.connect(self.reload_apps)
+        filter_layout.addWidget(self.load_icons_cb)
+
+        sort_label = QLabel("排序:")
+        self.sort_combo = QComboBox()
+        self.sort_combo.addItems(["名称", "包名"])
+        self.sort_combo.currentIndexChanged.connect(self.reload_apps)
+        filter_layout.addWidget(sort_label)
+        filter_layout.addWidget(self.sort_combo)
         
         app_list_layout.addLayout(filter_layout)
         
@@ -517,10 +561,15 @@ class AppManagerDialog(QDialog):
         self.progress_bar.setVisible(True)
         
         # 在后台线程中加载
+        prefetch = 12 if self.load_icons_cb.isChecked() else 0
+        sort_by_name = (self.sort_combo.currentIndex() == 0)
         self.app_list_thread = AppListThread(
             self.controller, 
             device_id,
-            self.show_system_cb.isChecked()
+            self.show_system_cb.isChecked(),
+            self.load_icons_cb.isChecked(),
+            prefetch,
+            sort_by_name
         )
         self.app_list_thread.app_loaded.connect(self.update_app_list)
         self.app_list_thread.loading_progress.connect(self.update_loading_progress)
@@ -567,7 +616,7 @@ class AppManagerDialog(QDialog):
         
         # 添加应用到列表
         for display_name, package_name in app_list:
-            item = QListWidgetItem(display_name)
+            item = QListWidgetItem(f"{display_name} ({package_name})")
             item.setData(Qt.UserRole, package_name)
             item.setToolTip(package_name)
             
