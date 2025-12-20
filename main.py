@@ -57,7 +57,7 @@ class ScrcpyUI(QMainWindow):
         self.event_monitor = None  # 事件监控器
         
         # 计算界面缩放，先设置主题再应用尺寸缩放
-        self.ui_scale = self.compute_ui_scale()
+        self.ui_scale = self.compute_ui_scale_v2()
         self.apply_dark_theme()
         self.apply_scale_styles()
         
@@ -301,6 +301,30 @@ class ScrcpyUI(QMainWindow):
         except Exception:
             return 0.9
 
+    def compute_ui_scale_v2(self):
+        """Compute a compact UI scale based on resolution and DPI."""
+        try:
+            screen = QApplication.primaryScreen()
+            avail = screen.availableGeometry() if screen else None
+            if not avail:
+                return 0.8
+            w, h = avail.width(), avail.height()
+            base_w, base_h = 1920, 1080
+            res_ratio = min(w / base_w, h / base_h)
+            base_scale = 0.8
+            res_factor = 1.0
+            if res_ratio > 1.0:
+                res_factor = 1.0 / (res_ratio ** 0.35)
+            dpi = screen.logicalDotsPerInch() if screen else 96.0
+            if not dpi:
+                dpi = 96.0
+            self.ui_dpi = dpi
+            dpi_factor = min(1.0, 96.0 / dpi)
+            scale = base_scale * res_factor * dpi_factor
+            return max(0.6, min(scale, 0.9))
+        except Exception:
+            return 0.8
+
     def apply_dark_theme(self):
         """应用柔和的中性主题"""
         palette = QPalette()
@@ -494,27 +518,57 @@ class ScrcpyUI(QMainWindow):
         scale = getattr(self, 'ui_scale', 1.0)
         def px(v):
             return f"{max(1, int(round(v * scale)))}px"
-        font_pt = max(9, int(round(11 * scale)))
-        small_font_pt = max(9, int(round(10 * scale)))
+        font_pt = max(7, int(round(9 * scale)))
+        small_font_pt = max(7, int(round(8 * scale)))
+        dpi = getattr(self, 'ui_dpi', 96.0)
+        use_px_font = dpi <= 110
+        if use_px_font:
+            font_px = max(10, int(round(font_pt * 1.3)))
+            small_font_px = max(9, int(round(small_font_pt * 1.3)))
+            widget_font_rule = f"font-size: {font_px}px;"
+            text_font_rule = f"font-size: {small_font_px}px;"
+        else:
+            widget_font_rule = f"font-size: {font_pt}pt;"
+            text_font_rule = f"font-size: {small_font_pt}pt;"
         style = f"""
         QWidget {{
-            font-size: {font_pt}pt;
+            {widget_font_rule}
         }}
         QPushButton {{
-            padding: {px(4)} {px(10)};
-            min-height: {px(26)};
+            padding: {px(2)} {px(7)};
+            min-height: {px(20)};
         }}
         QLineEdit, QComboBox {{
-            padding: {px(4)} {px(8)};
-            min-height: {px(26)};
+            padding: {px(2)} {px(6)};
+            min-height: {px(22)};
         }}
         QGroupBox {{
-            margin-top: {px(8)};
-            padding-top: {px(12)};
-            border-radius: {px(6)};
+            margin-top: {px(5)};
+            padding-top: {px(8)};
+            border-radius: {px(4)};
+        }}
+        QGroupBox::title {{
+            left: {px(8)};
+            padding: 0 {px(4)};
+            font-size: {font_pt}pt;
+        }}
+        QComboBox::drop-down {{
+            width: {px(16)};
+        }}
+        QCheckBox {{
+            spacing: {px(4)};
+        }}
+        QCheckBox::indicator {{
+            width: {px(14)};
+            height: {px(14)};
+        }}
+        QPushButton#home_btn, QPushButton#back_btn, QPushButton#menu_btn {{
+            padding: {px(2)} {px(6)};
+            min-width: {px(72)};
+            margin: {px(1)};
         }}
         QTextEdit {{
-            font-size: {small_font_pt}pt;
+            {text_font_rule}
         }}
         """
         self.setStyleSheet(self.styleSheet() + "\n" + style)
@@ -522,15 +576,15 @@ class ScrcpyUI(QMainWindow):
     def apply_dark_theme(self):
         """应用现代浅色主题（覆盖旧样式定义）"""
         palette = QPalette()
-        background_color = QColor(245, 246, 250)
+        background_color = QColor(244, 243, 240)
         panel_color = QColor(255, 255, 255)
-        text_color = QColor(30, 32, 36)
-        accent = QColor(72, 116, 245)
+        text_color = QColor(28, 30, 33)
+        accent = QColor(42, 122, 108)
 
         palette.setColor(QPalette.Window, background_color)
         palette.setColor(QPalette.WindowText, text_color)
         palette.setColor(QPalette.Base, panel_color)
-        palette.setColor(QPalette.AlternateBase, QColor(248, 249, 252))
+        palette.setColor(QPalette.AlternateBase, QColor(250, 249, 247))
         palette.setColor(QPalette.ToolTipBase, panel_color)
         palette.setColor(QPalette.ToolTipText, text_color)
         palette.setColor(QPalette.Text, text_color)
@@ -546,181 +600,167 @@ class ScrcpyUI(QMainWindow):
 
         self.setStyleSheet("""
             QGroupBox {
-                border: 1px solid #d9deea;
-                border-radius: 10px;
-                margin-top: 12px;
-                padding-top: 16px;
+                border: 1px solid #e2e0dc;
+                border-radius: 8px;
+                margin-top: 10px;
+                padding-top: 14px;
                 font-weight: 600;
                 background-color: #ffffff;
             }
             QGroupBox::title {
                 subcontrol-origin: margin;
                 subcontrol-position: top left;
-                left: 12px;
-                padding: 0 6px;
-                color: #4a74f5;
+                left: 10px;
+                padding: 0 5px;
+                color: #2a7a6c;
             }
             QPushButton {
-                background-color: #4a74f5;
+                background-color: #2a7a6c;
                 color: #ffffff;
-                border: 1px solid #3d63d6;
-                border-radius: 6px;
-                padding: 6px 14px;
+                border: 1px solid #1f5c52;
+                border-radius: 5px;
                 font-weight: 600;
-                min-height: 28px;
             }
-            QPushButton:hover { background-color: #3f66da; }
-            QPushButton:pressed { background-color: #3558c3; }
+            QPushButton:hover { background-color: #246a5e; }
+            QPushButton:pressed { background-color: #1f5c52; }
             QPushButton:disabled {
-                background-color: #cccccc;
-                color: #7f8797;
-                border: 1px solid #c9cdd6;
+                background-color: #d3d1cc;
+                color: #8d8a84;
+                border: 1px solid #c9c6c0;
             }
             QPushButton#usb_btn, QPushButton#wifi_btn {
-                background-color: #43b581;
-                border-color: #369368;
+                background-color: #3b8a76;
+                border-color: #2f6e60;
             }
-            QPushButton#usb_btn:hover, QPushButton#wifi_btn:hover { background-color: #3aa373; }
-            QPushButton#usb_btn:pressed, QPushButton#wifi_btn:pressed { background-color: #318d64; }
+            QPushButton#usb_btn:hover, QPushButton#wifi_btn:hover { background-color: #327665; }
+            QPushButton#usb_btn:pressed, QPushButton#wifi_btn:pressed { background-color: #2a6356; }
             QPushButton#connect_all_btn {
-                background-color: #ffb74d;
-                border-color: #f29b2c;
-                color: #2f2f2f;
+                background-color: #caa15a;
+                border-color: #b58b45;
+                color: #2f2a24;
             }
-            QPushButton#connect_all_btn:hover { background-color: #f9a733; }
-            QPushButton#connect_all_btn:pressed { background-color: #ec961d; }
+            QPushButton#connect_all_btn:hover { background-color: #bb9150; }
+            QPushButton#connect_all_btn:pressed { background-color: #a77f44; }
             QPushButton#stop_btn {
-                background-color: #ea4335;
-                border-color: #d93224;
+                background-color: #c85b52;
+                border-color: #b24a43;
             }
-            QPushButton#stop_btn:hover { background-color: #db3628; }
-            QPushButton#stop_btn:pressed { background-color: #c42a1f; }
-            QPushButton#screenshot_btn {
-                background-color: #4a74f5;
-            }
-            QPushButton#screenshot_btn:hover { background-color: #3f66da; }
-            QPushButton#screenshot_btn:pressed { background-color: #3558c3; }
+            QPushButton#stop_btn:hover { background-color: #b95149; }
+            QPushButton#stop_btn:pressed { background-color: #a64740; }
+            QPushButton#screenshot_btn { background-color: #2a7a6c; }
+            QPushButton#screenshot_btn:hover { background-color: #246a5e; }
+            QPushButton#screenshot_btn:pressed { background-color: #1f5c52; }
             QPushButton#clear_log_btn {
-                background-color: #7a8191;
-                border-color: #6a7080;
+                background-color: #7b7770;
+                border-color: #67635c;
             }
-            QPushButton#clear_log_btn:hover { background-color: #6c7384; }
-            QPushButton#clear_log_btn:pressed { background-color: #5d6373; }
+            QPushButton#clear_log_btn:hover { background-color: #6e6a64; }
+            QPushButton#clear_log_btn:pressed { background-color: #5f5b56; }
             QLineEdit, QComboBox {
-                border: 1px solid #d9deea;
-                border-radius: 6px;
-                padding: 6px 10px;
+                border: 1px solid #e2e0dc;
+                border-radius: 5px;
                 background-color: #ffffff;
-                color: #1e2024;
-                min-height: 30px;
-                selection-background-color: #e6edff;
+                color: #1c1e21;
+                selection-background-color: #dcebe7;
             }
             QComboBox::drop-down {
                 subcontrol-origin: padding;
                 subcontrol-position: center right;
-                width: 22px;
-                border-left: 1px solid #d9deea;
+                width: 20px;
+                border-left: 1px solid #e2e0dc;
             }
             QComboBox QAbstractItemView {
-                border: 1px solid #d9deea;
+                border: 1px solid #e2e0dc;
                 background-color: #ffffff;
-                selection-background-color: #e6edff;
-                selection-color: #1e2024;
+                selection-background-color: #dcebe7;
+                selection-color: #1c1e21;
             }
-            QCheckBox { color: #1e2024; spacing: 8px; }
+            QCheckBox { color: #1c1e21; }
             QCheckBox::indicator {
-                width: 18px;
-                height: 18px;
-                border: 1px solid #d9deea;
+                border: 1px solid #d7d5d1;
                 border-radius: 4px;
                 background-color: #ffffff;
             }
             QCheckBox::indicator:checked {
-                background-color: #4a74f5;
-                border-color: #4a74f5;
+                background-color: #2a7a6c;
+                border-color: #2a7a6c;
             }
-            QCheckBox::indicator:hover { border-color: #4a74f5; }
+            QCheckBox::indicator:hover { border-color: #2a7a6c; }
             QLineEdit:focus, QComboBox:focus, QTextEdit:focus {
-                border: 1px solid #4a74f5;
+                border: 1px solid #2a7a6c;
                 outline: none;
-                box-shadow: 0 0 0 3px rgba(74, 116, 245, 0.18);
             }
             QTextEdit {
-                border: 1px solid #d0d0d0;
-                border-radius: 6px;
-                padding: 8px;
-                background-color: #fdfdfe;
-                color: #333333;
+                border: 1px solid #e0ded9;
+                border-radius: 5px;
+                background-color: #fbfaf8;
+                color: #2a2a2a;
             }
             QListWidget {
-                border: 1px solid #d0d0d0;
-                border-radius: 6px;
-                padding: 4px;
+                border: 1px solid #e0ded9;
+                border-radius: 5px;
             }
             QListWidget::item:selected {
-                background-color: #e6edff;
-                color: #1e2024;
+                background-color: #dcebe7;
+                color: #1c1e21;
             }
             QMenuBar {
-                background-color: #f5f5f5;
-                border-bottom: 1px solid #d9deea;
+                background-color: #f1efec;
+                border-bottom: 1px solid #e2e0dc;
             }
-            QMenuBar::item { padding: 4px 12px; }
-            QMenuBar::item:selected { background: #e6edff; }
+            QMenuBar::item { padding: 4px 10px; }
+            QMenuBar::item:selected { background: #e6e3de; }
             QMenu {
-                border: 1px solid #d9deea;
+                border: 1px solid #e2e0dc;
                 background-color: #ffffff;
             }
-            QMenu::item:selected { background-color: #e6edff; }
+            QMenu::item:selected { background-color: #e6e3de; }
             QFrame#line {
-                background-color: #d9deea;
+                background-color: #e2e0dc;
                 max-height: 1px;
             }
             QLabel#title {
-                color: #4a74f5;
-                font-size: 17px;
+                color: #2a7a6c;
+                font-size: 15px;
                 font-weight: 700;
             }
             QStatusBar {
-                background-color: #f5f5f5;
-                border-top: 1px solid #d9deea;
+                background-color: #f1efec;
+                border-top: 1px solid #e2e0dc;
             }
             QPushButton#about_btn {
-                background-color: #5f6dd8;
-                border-color: #4d59bd;
+                background-color: #4d6b9a;
+                border-color: #3d557a;
             }
-            QPushButton#about_btn:hover { background-color: #525fc2; }
-            QPushButton#about_btn:pressed { background-color: #4552aa; }
+            QPushButton#about_btn:hover { background-color: #425c88; }
+            QPushButton#about_btn:pressed { background-color: #374e73; }
             QScrollBar:vertical {
                 border: none;
-                background: #f0f1f5;
-                width: 10px;
+                background: #f0eeea;
+                width: 9px;
                 margin: 0px;
             }
             QScrollBar::handle:vertical {
-                background: #c9cdd6;
-                min-height: 20px;
-                border-radius: 5px;
+                background: #c7c2b8;
+                min-height: 18px;
+                border-radius: 4px;
             }
             QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical {
                 height: 0px;
             }
             /* 导航按钮 */
             QPushButton#home_btn, QPushButton#back_btn, QPushButton#menu_btn {
-                background-color: #5f6dd8;
-                color: white;
+                background-color: #4d6b9a;
+                color: #ffffff;
                 font-weight: 600;
-                padding: 8px 14px;
-                min-width: 96px;
-                border-radius: 6px;
-                border: 1px solid #4d59bd;
-                margin: 2px;
+                border-radius: 5px;
+                border: 1px solid #3d557a;
             }
             QPushButton#home_btn:hover, QPushButton#back_btn:hover, QPushButton#menu_btn:hover {
-                background-color: #525fc2;
+                background-color: #425c88;
             }
             QPushButton#home_btn:pressed, QPushButton#back_btn:pressed, QPushButton#menu_btn:pressed {
-                background-color: #4552aa;
+                background-color: #374e73;
             }
         """)
         
@@ -730,10 +770,14 @@ class ScrcpyUI(QMainWindow):
             def dedup_repeated_dir(path):
                 """Collapse duplicated parent folders like foo/foo/file.ext"""
                 norm = os.path.normpath(path)
+                if os.path.exists(norm):
+                    return norm
                 parts = norm.split(os.sep)
                 if len(parts) >= 4 and parts[-2].lower() == parts[-3].lower():
                     parts.pop(-3)
-                    norm = os.sep.join(parts)
+                    collapsed = os.sep.join(parts)
+                    if os.path.exists(collapsed):
+                        return collapsed
                 return norm
 
             def find_local_adb(base_dir):
@@ -776,6 +820,12 @@ class ScrcpyUI(QMainWindow):
             script_dir = os.path.dirname(os.path.abspath(__file__))
             if os.path.isdir(script_dir) and script_dir not in search_roots:
                 search_roots.append(script_dir)
+            exe_dir = os.path.dirname(sys.executable) if sys.executable else ""
+            if exe_dir and os.path.isdir(exe_dir) and exe_dir not in search_roots:
+                search_roots.append(exe_dir)
+            exe_dir = os.path.dirname(sys.executable) if sys.executable else ""
+            if exe_dir and os.path.isdir(exe_dir) and exe_dir not in search_roots:
+                search_roots.append(exe_dir)
 
             for root in search_roots:
                 local_adb = find_local_adb(root)
@@ -837,10 +887,14 @@ class ScrcpyUI(QMainWindow):
             def dedup_repeated_dir(path):
                 """Collapse duplicated parent folders like foo/foo/file.ext"""
                 norm = os.path.normpath(path)
+                if os.path.exists(norm):
+                    return norm
                 parts = norm.split(os.sep)
                 if len(parts) >= 4 and parts[-2].lower() == parts[-3].lower():
                     parts.pop(-3)
-                    norm = os.sep.join(parts)
+                    collapsed = os.sep.join(parts)
+                    if os.path.exists(collapsed):
+                        return collapsed
                 return norm
 
             def find_local_scrcpy(base_dir):
@@ -867,14 +921,44 @@ class ScrcpyUI(QMainWindow):
                             return dedup_repeated_dir(candidate)
                 return None
 
+            def resolve_scrcpy_with_server(scrcpy_path):
+                """Prefer scrcpy that has scrcpy-server in the same directory."""
+                if not scrcpy_path:
+                    return None
+                server_dir = os.path.dirname(scrcpy_path)
+                for name in ("scrcpy-server", "scrcpy-server.jar"):
+                    server_path = os.path.join(server_dir, name)
+                    if os.path.isfile(server_path):
+                        os.environ["SCRCPY_SERVER_PATH"] = server_path
+                        return scrcpy_path
+                return None
+
+            def find_scrcpy_in_path():
+                """Yield scrcpy candidates found in PATH, in order."""
+                path_env = os.environ.get("PATH", "")
+                if not path_env:
+                    return []
+                candidates = []
+                exe_name = "scrcpy.exe" if os.name == "nt" else "scrcpy"
+                for entry in path_env.split(os.pathsep):
+                    entry = entry.strip('"')
+                    if not entry:
+                        continue
+                    candidate = os.path.join(entry, exe_name)
+                    if os.path.isfile(candidate):
+                        candidates.append(candidate)
+                return candidates
+
             # 检查是否是PyInstaller打包环境
             if getattr(sys, 'frozen', False):
                 # 在PyInstaller环境中，使用_MEIPASS查找打包的资源目录
                 base_path = getattr(sys, '_MEIPASS', os.path.dirname(os.path.abspath(__file__)))
                 bundled_scrcpy = find_local_scrcpy(base_path)
                 if bundled_scrcpy:
-                    self.log(f"使用打包的scrcpy: {bundled_scrcpy}")
-                    return bundled_scrcpy
+                    resolved = resolve_scrcpy_with_server(bundled_scrcpy)
+                    if resolved:
+                        self.log(f"使用打包的scrcpy: {resolved}")
+                        return resolved
             
             # 首选运行目录，其次脚本目录（不固定文件夹名）
             search_roots = []
@@ -888,11 +972,26 @@ class ScrcpyUI(QMainWindow):
             for root in search_roots:
                 local_scrcpy = find_local_scrcpy(root)
                 if local_scrcpy:
-                    self.log(f"使用本地scrcpy: {local_scrcpy}")
-                    return local_scrcpy
+                    resolved = resolve_scrcpy_with_server(local_scrcpy)
+                    if resolved:
+                        self.log(f"使用本地scrcpy: {resolved}")
+                        return resolved
                 
             # 如果本地没有，才尝试通过环境变量PATH查找
             if os.name == 'nt':
+                path_candidates = find_scrcpy_in_path()
+                if path_candidates:
+                    fallback = None
+                    for scrcpy_candidate in path_candidates:
+                        if not fallback:
+                            fallback = scrcpy_candidate
+                        resolved = resolve_scrcpy_with_server(scrcpy_candidate)
+                        if resolved:
+                            return resolved
+                    if fallback:
+                        self.log(f"警告: {fallback} 同目录下未找到 scrcpy-server，仍将使用该路径")
+                        return fallback
+
                 startupinfo = subprocess.STARTUPINFO()
                 startupinfo.dwFlags |= subprocess.STARTF_USESHOWWINDOW
                 creationflags = subprocess.CREATE_NO_WINDOW
@@ -907,19 +1006,44 @@ class ScrcpyUI(QMainWindow):
                 )
                 
                 if result.returncode == 0 and result.stdout:
+                    fallback = None
                     for line in result.stdout.splitlines():
                         scrcpy_candidate = line.strip()
                         if scrcpy_candidate:
-                            return scrcpy_candidate
+                            if not fallback:
+                                fallback = scrcpy_candidate
+                            resolved = resolve_scrcpy_with_server(scrcpy_candidate)
+                            if resolved:
+                                return resolved
+                    if fallback:
+                        self.log(f"警告: {fallback} 同目录下未找到 scrcpy-server，仍将使用该路径")
+                        return fallback
             else:
                 # 在Linux和macOS下查找
+                path_candidates = find_scrcpy_in_path()
+                if path_candidates:
+                    fallback = None
+                    for scrcpy_candidate in path_candidates:
+                        if not fallback:
+                            fallback = scrcpy_candidate
+                        resolved = resolve_scrcpy_with_server(scrcpy_candidate)
+                        if resolved:
+                            return resolved
+                    if fallback:
+                        self.log(f"警告: {fallback} 同目录下未找到 scrcpy-server，仍将使用该路径")
+                        return fallback
+
                 result = subprocess.run(['which', 'scrcpy'], 
                                        capture_output=True, 
                                        text=True, 
                                        check=False)
                 
                 if result.returncode == 0 and result.stdout.strip():
-                    return result.stdout.strip()
+                    candidate = result.stdout.strip()
+                    resolved = resolve_scrcpy_with_server(candidate)
+                    if resolved:
+                        return resolved
+                    return candidate
             
             # 如果没有找到，尝试一些常见的路径
             common_paths = [
@@ -930,9 +1054,17 @@ class ScrcpyUI(QMainWindow):
                 '/usr/local/bin/scrcpy'
             ]
         
+            fallback = None
             for path in common_paths:
                 if os.path.isfile(path):
-                    return path
+                    if not fallback:
+                        fallback = path
+                    resolved = resolve_scrcpy_with_server(path)
+                    if resolved:
+                        return resolved
+            if fallback:
+                self.log(f"警告: {fallback} 同目录下未找到 scrcpy-server，仍将使用该路径")
+                return fallback
             
             # 如果仍然没有找到，返回默认的'scrcpy'命令
             return 'scrcpy'
@@ -968,17 +1100,17 @@ class ScrcpyUI(QMainWindow):
         # 根据屏幕可用尺寸智能自适应，略微再降低高度
         screen = QApplication.primaryScreen()
         avail = screen.availableGeometry() if screen else None
-        base_w, base_h = 800, 590
+        base_w, base_h = 760, 540
         if avail:
             w = avail.width()
             h = avail.height()
             # 大屏减小比例，小屏保持适中
-            frac_w = 0.50 if w < 1920 else 0.42
-            frac_h = 0.52 if h < 1080 else 0.45
-            base_w = max(720, min(int(w * frac_w), 980))
-            base_h = max(540, min(int(h * frac_h), 760))
+            frac_w = 0.46 if w < 1920 else 0.38
+            frac_h = 0.48 if h < 1080 else 0.40
+            base_w = max(640, min(int(w * frac_w), 900))
+            base_h = max(480, min(int(h * frac_h), 680))
         self.resize(base_w, base_h)
-        self.setMinimumSize(680, 520)
+        self.setMinimumSize(620, 460)
         
         # 创建菜单栏
         self.create_menus()
@@ -987,17 +1119,30 @@ class ScrcpyUI(QMainWindow):
         central_widget = QWidget()
         self.setCentralWidget(central_widget)
         main_layout = QVBoxLayout(central_widget)
-        main_layout.setContentsMargins(15, 15, 15, 15)
-        main_layout.setSpacing(12)
+        scale = getattr(self, 'ui_scale', 1.0)
+        margin = max(8, int(round(12 * scale)))
+        spacing = max(6, int(round(9 * scale)))
+        def scaled(value, min_value):
+            return max(min_value, int(round(value * scale)))
+        layout_margin = max(6, int(round(8 * scale)))
+        layout_spacing = max(4, int(round(6 * scale)))
+        def compact_layout(layout, margin_value=None, spacing_value=None):
+            m = layout_margin if margin_value is None else margin_value
+            s = layout_spacing if spacing_value is None else spacing_value
+            layout.setContentsMargins(m, m, m, m)
+            layout.setSpacing(s)
+        main_layout.setContentsMargins(margin, margin, margin, margin)
+        main_layout.setSpacing(spacing)
         
         # 创建设备管理区域
         device_group = QGroupBox("设备连接")
         device_layout = QHBoxLayout(device_group)
+        compact_layout(device_layout)
         
         # 设备选择区域
         device_label = QLabel("设备:")
         self.device_combo = QComboBox()
-        self.device_combo.setMinimumWidth(250)
+        self.device_combo.setMinimumWidth(scaled(220, 160))
         
         refresh_btn = QPushButton("刷新设备")
         refresh_btn.clicked.connect(lambda: self.check_devices(True))  # 显式传递show_message=True
@@ -1025,6 +1170,7 @@ class ScrcpyUI(QMainWindow):
         self.auto_refresh_cb.stateChanged.connect(self.toggle_auto_refresh)
         
         connection_layout = QHBoxLayout()
+        compact_layout(connection_layout, margin_value=0, spacing_value=layout_spacing)
         connection_layout.addWidget(self.usb_btn)
         connection_layout.addWidget(self.wifi_btn)
         connection_layout.addWidget(self.connect_all_btn)
@@ -1037,29 +1183,30 @@ class ScrcpyUI(QMainWindow):
         # 添加镜像模式选项组
         mirror_group = QGroupBox("镜像模式")
         mirror_layout = QGridLayout(mirror_group)
+        compact_layout(mirror_layout)
         
         # 比特率
         bitrate_label = QLabel("比特率:")
         self.bitrate_input = QLineEdit("6")
-        self.bitrate_input.setMaximumWidth(80)
+        self.bitrate_input.setMaximumWidth(scaled(72, 56))
         bitrate_unit = QLabel("Mbps")
         
         # 最大尺寸
         maxsize_label = QLabel("最大尺寸:")
         self.maxsize_input = QLineEdit("1080")
-        self.maxsize_input.setMaximumWidth(80)
+        self.maxsize_input.setMaximumWidth(scaled(72, 56))
         
         # 录制格式
         format_label = QLabel("录制格式:")
         self.format_combo = QComboBox()
         self.format_combo.addItems(["mp4", "mkv"])
-        self.format_combo.setMaximumWidth(100)
+        self.format_combo.setMaximumWidth(scaled(88, 70))
         
         # 限制方向
         rotation_label = QLabel("限制方向:")
         self.rotation_combo = QComboBox()
         self.rotation_combo.addItems(["不限制", "横屏", "竖屏"])
-        self.rotation_combo.setMaximumWidth(100)
+        self.rotation_combo.setMaximumWidth(scaled(88, 70))
         
         # 录制存储路径
         record_label = QLabel("录制存储路径:")
@@ -1086,6 +1233,7 @@ class ScrcpyUI(QMainWindow):
         # 添加功能选项组
         options_group = QGroupBox("功能选项")
         options_layout = QGridLayout(options_group)
+        compact_layout(options_layout)
         
         self.record_cb = QCheckBox("录制屏幕")
         self.fullscreen_cb = QCheckBox("全屏显示")
@@ -1103,7 +1251,7 @@ class ScrcpyUI(QMainWindow):
         self.sync_control_device_combo = QComboBox()
         self.sync_control_device_combo.setEnabled(False)
         self.sync_control_device_combo.setToolTip("选择主控设备（功能维护中）")
-        self.sync_control_device_combo.setMinimumWidth(150)
+        self.sync_control_device_combo.setMinimumWidth(scaled(140, 120))
         
         # 创建群控设置按钮
         self.sync_control_settings_btn = QPushButton("群控设置")
@@ -2027,13 +2175,24 @@ def main():
     try:
         QApplication.setAttribute(Qt.AA_EnableHighDpiScaling, True)
         QApplication.setAttribute(Qt.AA_UseHighDpiPixmaps, True)
+        QApplication.setAttribute(Qt.AA_Use96Dpi, True)
     except Exception:
         pass
 
     app = QApplication(sys.argv)
     
     # 设置应用字体
-    app_font = QFont("微软雅黑", 9)
+    app_font = QFont("微软雅黑")
+    try:
+        screen = app.primaryScreen()
+        dpi = screen.logicalDotsPerInch() if screen else 96.0
+        if dpi <= 110:
+            app_font.setPixelSize(11)
+        else:
+            app_font.setPointSize(8)
+        app_font.setHintingPreference(QFont.PreferFullHinting)
+    except Exception:
+        app_font.setPointSize(8)
     QApplication.setFont(app_font)
     
     # 设置应用程序图标
