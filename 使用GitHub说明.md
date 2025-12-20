@@ -1,5 +1,7 @@
 # GitHub配置说明
 
+项目依赖 scrcpy：https://github.com/Genymobile/scrcpy
+
 ## 仓库设置
 
 1. 在GitHub上创建新仓库
@@ -47,6 +49,12 @@ python -m venv .venv
 pip install -r requirements.txt
 ```
 
+4. 准备 scrcpy/adb（推荐自动配置）:
+```bash
+python setup_scrcpy.py
+```
+如已在系统 PATH 中安装 scrcpy/adb，可跳过此步骤。
+
 #### Linux/macOS系统
 
 1. 安装虚拟环境:
@@ -63,6 +71,12 @@ source .venv/bin/activate
 ```bash
 pip install -r requirements.txt
 ```
+
+4. 准备 scrcpy/adb（推荐自动配置）:
+```bash
+python setup_scrcpy.py
+```
+如已在系统 PATH 中安装 scrcpy/adb，可跳过此步骤。
 
 ### 运行程序
 

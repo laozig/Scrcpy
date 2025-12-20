@@ -2,6 +2,8 @@
 
 本文档提供了如何在Scrcpy GUI项目中使用Python虚拟环境的详细说明。虚拟环境能够提供一个独立的Python运行环境，避免不同项目之间的依赖冲突。
 
+项目依赖 scrcpy：https://github.com/Genymobile/scrcpy
+
 ## 为什么使用虚拟环境？
 
 - 隔离项目依赖，避免版本冲突
@@ -63,6 +65,8 @@ pip install -r requirements.txt
 ```
 python main.py
 ```
+
+运行前请确保已准备好 scrcpy/adb（可运行 `python setup_scrcpy.py` 自动下载配置，或使用系统 PATH 中的安装）。
 
 ## 添加新依赖
 

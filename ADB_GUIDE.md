@@ -2,6 +2,8 @@
 
 本指南详细介绍如何使用 ADB (Android Debug Bridge) 在计算机和 Android 设备之间传输文件。
 
+本项目依赖 scrcpy：https://github.com/Genymobile/scrcpy
+
 ## 什么是 ADB？
 
 ADB (Android Debug Bridge) 是一个多功能的命令行工具，用于与 Android 设备进行通信。通过 ADB，您可以：
@@ -136,13 +138,10 @@ adb push <本地文件路径> <设备文件路径>
 adb pull <设备文件路径> <本地文件路径>
 ```
 
-## 使用 Scrcpy GUI 传输文件
+## 与 ScrcpyGUI 的关系
 
-Scrcpy GUI 提供了基于 ADB 的文件传输功能：
-
-1. 在 Scrcpy GUI 中连接设备
-2. 选择"文件传输"选项
-3. 使用图形界面选择要传输的文件和目标位置
+ScrcpyGUI 依赖 ADB 完成设备连接与控制。本指南提供的 ADB 命令可直接用于文件传输与设备管理。
+当前 ScrcpyGUI 不提供专门的“文件传输”界面，建议按本指南使用 `adb push/pull` 完成文件操作。
 
 ## 常见问题解决
 
