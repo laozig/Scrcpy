@@ -9,7 +9,8 @@ import platform
 import threading
 import time
 import random
-import sys
+
+from utils import console_log
 
 """
 Scrcpy控制器模块，用于与Android设备进行通信和控制。
@@ -22,12 +23,23 @@ Scrcpy控制器模块，用于与Android设备进行通信和控制。
 """
 
 class ScrcpyController:
-    def __init__(self):
+    def __init__(self, adb_path="adb", scrcpy_path="scrcpy"):
         self.process = None
         self.system = platform.system()
-        
-        # 添加群控相关设置
-        self.sync_control_enabled = False
+        self.adb_path = adb_path or "adb"
+        self.scrcpy_path = scrcpy_path or "scrcpy"
+
+    def _adb_command(self, *args, device_id=None):
+        """构建统一的 adb 命令。"""
+        cmd = [self.adb_path]
+        if device_id:
+            cmd.extend(["-s", device_id])
+        cmd.extend(args)
+        return cmd
+
+    def _scrcpy_command(self, *args):
+        """构建统一的 scrcpy 命令。"""
+        return [self.scrcpy_path, *args]
         
     def get_devices(self):
         """
@@ -37,66 +49,103 @@ class ScrcpyController:
             list: 设备列表，每个元素为(device_id, model)的元组
         """
         try:
+            return [
+                (entry["device_id"], entry["model"])
+                for entry in self.get_device_statuses()
+                if entry.get("status") == "device"
+            ]
+        except Exception as e:
+            console_log(f"获取设备列表出错: {e}", "ERROR")
+            return []
+
+    def get_device_statuses(self):
+        """获取设备列表及状态信息。"""
+        try:
             kwargs = {}
             if self.system == 'Windows':
                 kwargs['creationflags'] = subprocess.CREATE_NO_WINDOW
-                
+
             result = subprocess.run(
-                ["adb", "devices"], 
-                capture_output=True, 
-                text=True, 
+                self._adb_command("devices", "-l"),
+                capture_output=True,
+                text=True,
                 check=False,
                 **kwargs
             )
-            
+
             if result.returncode != 0:
-                print(f"获取设备列表失败: {result.stderr}")
+                console_log(f"获取设备状态失败: {result.stderr}", "ERROR")
                 return []
-            
+
             devices = []
             lines = result.stdout.strip().split('\n')
-            
-            # 跳过第一行（标题行）
             for line in lines[1:]:
-                if not line.strip():
+                line = line.strip()
+                if not line:
                     continue
-                    
-                # 支持不同格式的设备标识
-                parts = line.split('\t')
-                if len(parts) >= 2:
-                    device_id = parts[0].strip()
-                    status = parts[1].strip()
-                    
-                    # 只处理已认证的连接设备
-                    if status == 'device':
-                        # 获取设备型号信息
-                        try:
-                            kwargs = {}
-                            if self.system == 'Windows':
-                                kwargs['creationflags'] = subprocess.CREATE_NO_WINDOW
-                                
-                            model_result = subprocess.run(
-                                ["adb", "-s", device_id, "shell", "getprop", "ro.product.model"],
-                                capture_output=True,
-                                text=True,
-                                check=False,
-                                timeout=2, # 设置超时时间
-                                **kwargs
-                            )
-                            if model_result.returncode == 0:
-                                model = model_result.stdout.strip()
-                                if not model:
-                                    model = "未知设备"
-                                devices.append((device_id, model))
-                            else:
-                                devices.append((device_id, "未知设备"))
-                        except Exception as e:
-                            devices.append((device_id, "未知设备"))
-            
+
+                parts = line.split()
+                if len(parts) < 2:
+                    continue
+
+                device_id = parts[0].strip()
+                status = parts[1].strip()
+                attrs = parts[2:]
+
+                model = self._extract_attr(attrs, "model")
+                transport = "wifi" if ":" in device_id else "usb"
+
+                if status == "device":
+                    if not model:
+                        model = self._get_device_model(device_id)
+                elif status == "offline":
+                    model = model or "离线设备"
+                elif status == "unauthorized":
+                    model = model or "未授权设备"
+                else:
+                    model = model or "未知设备"
+
+                devices.append({
+                    "device_id": device_id,
+                    "status": status,
+                    "model": model or "未知设备",
+                    "transport": transport,
+                })
+
             return devices
         except Exception as e:
-            print(f"获取设备列表出错: {e}")
+            console_log(f"获取设备状态出错: {e}", "ERROR")
             return []
+
+    def _extract_attr(self, attrs, key):
+        prefix = f"{key}:"
+        for item in attrs:
+            if item.startswith(prefix):
+                return item[len(prefix):]
+        return ""
+
+    def _get_device_model(self, device_id):
+        try:
+            kwargs = {}
+            if self.system == 'Windows':
+                kwargs['creationflags'] = subprocess.CREATE_NO_WINDOW
+
+            model_result = subprocess.run(
+                self._adb_command("shell", "getprop", "ro.product.model", device_id=device_id),
+                capture_output=True,
+                text=True,
+                check=False,
+                timeout=2,
+                **kwargs
+            )
+            if model_result.returncode == 0:
+                model = model_result.stdout.strip()
+                if model:
+                    return model
+        except Exception as e:
+            console_log(f"获取设备型号失败: {e}", "WARN")
+            pass
+        return "未知设备"
             
     def build_command(self, device_id=None, resolution=None, bit_rate=None, 
                       max_fps=None, record_path=None, fullscreen=False, 
@@ -120,7 +169,7 @@ class ScrcpyController:
         Returns:
             list: scrcpy命令参数列表
         """
-        cmd = ["scrcpy"]
+        cmd = [self.scrcpy_path]
         
         # 设备ID
         if device_id:
@@ -194,7 +243,7 @@ class ScrcpyController:
                     self.process.wait(timeout=5)
                 return True
             except Exception as e:
-                print(f"停止进程错误: {e}")
+                console_log(f"停止进程错误: {e}", "ERROR")
                 return False
         return True
         
@@ -209,7 +258,7 @@ class ScrcpyController:
                 kwargs['creationflags'] = subprocess.CREATE_NO_WINDOW
                 
             adb_version = subprocess.run(
-                ["adb", "version"], 
+                self._adb_command("version"), 
                 capture_output=True, 
                 text=True,
                 **kwargs
@@ -220,9 +269,10 @@ class ScrcpyController:
                 results["adb_version"] = match.group(1)
             else:
                 results["adb_version"] = "未知"
-        except:
+        except Exception as e:
             results["adb"] = False
             results["adb_version"] = None
+            console_log(f"检查 adb 依赖失败: {e}", "WARN")
             
         # 检查scrcpy
         try:
@@ -231,7 +281,7 @@ class ScrcpyController:
                 kwargs['creationflags'] = subprocess.CREATE_NO_WINDOW
                 
             scrcpy_version = subprocess.run(
-                ["scrcpy", "--version"], 
+                self._scrcpy_command("--version"), 
                 capture_output=True, 
                 text=True,
                 **kwargs
@@ -242,9 +292,10 @@ class ScrcpyController:
                 results["scrcpy_version"] = match.group(1)
             else:
                 results["scrcpy_version"] = "未知"
-        except:
+        except Exception as e:
             results["scrcpy"] = False
             results["scrcpy_version"] = None
+            console_log(f"检查 scrcpy 依赖失败: {e}", "WARN")
             
         return results
         
@@ -260,10 +311,7 @@ class ScrcpyController:
             tuple: (成功标志, 信息)
         """
         try:
-            cmd = ["adb"]
-            if device_id:
-                cmd.extend(["-s", device_id])
-            cmd.extend(["tcpip", str(port)])
+            cmd = self._adb_command("tcpip", str(port), device_id=device_id)
             
             kwargs = {}
             if self.system == 'Windows':
@@ -303,7 +351,7 @@ class ScrcpyController:
                 kwargs['creationflags'] = subprocess.CREATE_NO_WINDOW
                 
             result = subprocess.run(
-                ["adb", "connect", connection_string],
+                self._adb_command("connect", connection_string),
                 capture_output=True,
                 text=True,
                 check=True,
@@ -331,7 +379,7 @@ class ScrcpyController:
             tuple: (成功标志, 信息)
         """
         try:
-            cmd = ["adb", "disconnect"]
+            cmd = self._adb_command("disconnect")
             if ip_address:
                 cmd.append(ip_address)
             
@@ -374,10 +422,7 @@ class ScrcpyController:
                 os.makedirs(save_dir)
                 
             # 构建adb命令
-            cmd = ["adb"]
-            if device_id:
-                cmd.extend(["-s", device_id])
-            cmd.extend(["exec-out", "screencap", "-p"])
+            cmd = self._adb_command("exec-out", "screencap", "-p", device_id=device_id)
             
             # 执行命令并将输出重定向到文件
             kwargs = {}
@@ -417,17 +462,17 @@ class ScrcpyController:
             
         try:
             # 获取设备型号
-            model_cmd = ["adb", "-s", device_id, "shell", "getprop", "ro.product.model"]
+            model_cmd = self._adb_command("shell", "getprop", "ro.product.model", device_id=device_id)
             model_result = subprocess.run(model_cmd, capture_output=True, text=True, check=True, **kwargs)
             info["model"] = model_result.stdout.strip()
             
             # 获取安卓版本
-            version_cmd = ["adb", "-s", device_id, "shell", "getprop", "ro.build.version.release"]
+            version_cmd = self._adb_command("shell", "getprop", "ro.build.version.release", device_id=device_id)
             version_result = subprocess.run(version_cmd, capture_output=True, text=True, check=True, **kwargs)
             info["android_version"] = version_result.stdout.strip()
             
             # 获取屏幕分辨率
-            res_cmd = ["adb", "-s", device_id, "shell", "wm", "size"]
+            res_cmd = self._adb_command("shell", "wm", "size", device_id=device_id)
             res_result = subprocess.run(res_cmd, capture_output=True, text=True, check=True, **kwargs)
             res_output = res_result.stdout.strip()
             res_match = re.search(r'Physical size: (\d+x\d+)', res_output)
@@ -436,7 +481,7 @@ class ScrcpyController:
                 
             return info
         except Exception as e:
-            print(f"获取设备信息出错: {e}")
+            console_log(f"获取设备信息出错: {e}", "ERROR")
             return info
 
     def execute_adb_command(self, command, device_id=None):
@@ -451,21 +496,6 @@ class ScrcpyController:
             tuple: (成功标志, 输出信息)
         """
         try:
-            # 检查获取可能的本地adb路径
-            # 检查是否是PyInstaller打包环境
-            if getattr(sys, 'frozen', False):
-                base_path = getattr(sys, '_MEIPASS', os.path.dirname(os.path.abspath(__file__)))
-                local_adb_path = os.path.join(base_path, 'scrcpy-win64-v3.2', 'adb.exe')
-            else:
-                local_adb_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), 
-                                          'scrcpy-win64-v3.2', 'adb.exe')
-            
-            # 判断是使用本地adb还是系统adb
-            if os.path.isfile(local_adb_path):
-                adb_cmd = local_adb_path
-            else:
-                adb_cmd = "adb"
-            
             # 根据输入类型构建完整命令
             if isinstance(command, str):
                 cmd_parts = shlex.split(command)
@@ -473,7 +503,7 @@ class ScrcpyController:
                 cmd_parts = command
 
             # 构建完整命令
-            full_cmd = [adb_cmd]
+            full_cmd = [self.adb_path]
             
             # 如果指定了设备ID，则添加设备ID参数
             if device_id:
@@ -517,26 +547,14 @@ class ScrcpyController:
             tuple: (成功标志, 信息)
         """
         try:
-            # 检查是否是PyInstaller打包环境
-            if getattr(sys, 'frozen', False):
-                base_path = getattr(sys, '_MEIPASS', os.path.dirname(os.path.abspath(__file__)))
-                local_scrcpy_path = os.path.join(base_path, 'scrcpy-win64-v3.2', 'scrcpy.exe')
-            else:
-                # 检查是否有本地scrcpy.exe
-                local_scrcpy_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), 
-                                         'scrcpy-win64-v3.2', 'scrcpy.exe')
-            
             # 确保命令是列表
             if isinstance(command_args, str):
                 command_args = shlex.split(command_args)
-                
-            # 判断是使用本地scrcpy还是系统scrcpy
-            if os.path.isfile(local_scrcpy_path):
-                # 替换第一个命令参数为本地路径
-                if command_args[0] == "scrcpy":
-                    command_args[0] = local_scrcpy_path
-                else:
-                    command_args = [local_scrcpy_path] + command_args[1:]
+
+            if not command_args:
+                command_args = [self.scrcpy_path]
+            elif os.path.basename(command_args[0]).lower() in ("scrcpy", "scrcpy.exe"):
+                command_args[0] = self.scrcpy_path
             
             # 如果有正在运行的进程，先停止
             if self.process and self.process.poll() is None:
@@ -587,12 +605,13 @@ class ScrcpyController:
             if self.system == 'Windows':
                 kwargs['creationflags'] = subprocess.CREATE_NO_WINDOW
                 
-            cmd = ["adb", "-s", device_id, "shell", "getprop", "ro.product.brand"]
+            cmd = self._adb_command("shell", "getprop", "ro.product.brand", device_id=device_id)
             result = subprocess.run(cmd, capture_output=True, text=True, check=False, **kwargs)
             if result.returncode == 0:
                 return result.stdout.strip()
             return "未知品牌"
-        except Exception:
+        except Exception as e:
+            console_log(f"获取设备品牌失败: {e}", "WARN")
             return "未知品牌"
             
     def get_device_full_info(self, device_id):
@@ -621,26 +640,26 @@ class ScrcpyController:
             
         try:
             # 获取品牌
-            brand_cmd = ["adb", "-s", device_id, "shell", "getprop", "ro.product.brand"]
+            brand_cmd = self._adb_command("shell", "getprop", "ro.product.brand", device_id=device_id)
             brand_result = subprocess.run(brand_cmd, capture_output=True, text=True, check=False, **kwargs)
             if brand_result.returncode == 0:
                 info["brand"] = brand_result.stdout.strip()
                 
             # 获取型号
-            model_cmd = ["adb", "-s", device_id, "shell", "getprop", "ro.product.model"]
+            model_cmd = self._adb_command("shell", "getprop", "ro.product.model", device_id=device_id)
             model_result = subprocess.run(model_cmd, capture_output=True, text=True, check=False, **kwargs)
             if model_result.returncode == 0:
                 info["model"] = model_result.stdout.strip()
                 
             # 获取Android版本
-            android_cmd = ["adb", "-s", device_id, "shell", "getprop", "ro.build.version.release"]
+            android_cmd = self._adb_command("shell", "getprop", "ro.build.version.release", device_id=device_id)
             android_result = subprocess.run(android_cmd, capture_output=True, text=True, check=False, **kwargs)
             if android_result.returncode == 0:
                 info["android"] = android_result.stdout.strip()
                 
             return info
         except Exception as e:
-            print(f"获取设备信息出错: {e}")
+            console_log(f"获取设备信息出错: {e}", "ERROR")
             return info
 
     # 添加群控相关方法
@@ -659,7 +678,7 @@ class ScrcpyController:
         """
         try:
             # 准备ADB命令
-            cmd = ["adb", "-s", device_id, "shell"]
+            cmd = self._adb_command("shell", device_id=device_id)
             
             if action == "tap":
                 cmd.extend(["input", "tap", str(int(x)), str(int(y))])
@@ -716,17 +735,17 @@ class ScrcpyController:
                 stdout, stderr = process.communicate(timeout=8)  # 8秒超时
                 
                 if process.returncode != 0:
-                    print(f"触摸命令执行失败: {stderr}")
+                    console_log(f"触摸命令执行失败: {stderr}", "WARN")
                     return False
                     
                 return True
             except subprocess.TimeoutExpired:
                 process.kill()
-                print(f"触摸命令执行超时")
+                console_log("触摸命令执行超时", "WARN")
                 return False
                 
         except Exception as e:
-            print(f"发送触摸事件失败: {str(e)}")
+            console_log(f"发送触摸事件失败: {str(e)}", "ERROR")
             return False
             
     def send_key_event(self, device_id, key_code):
@@ -741,7 +760,7 @@ class ScrcpyController:
             bool: 是否成功
         """
         try:
-            cmd = ["adb", "-s", device_id, "shell", "input", "keyevent", str(key_code)]
+            cmd = self._adb_command("shell", "input", "keyevent", str(key_code), device_id=device_id)
             
             kwargs = {}
             if self.system == 'Windows':
@@ -762,7 +781,7 @@ class ScrcpyController:
                 return False
                 
         except Exception as e:
-            print(f"发送按键事件到设备 {device_id} 失败: {e}")
+            console_log(f"发送按键事件到设备 {device_id} 失败: {e}", "ERROR")
             return False
             
     def send_text_input(self, device_id, text):
@@ -785,7 +804,7 @@ class ScrcpyController:
                 # Linux/macOS下使用单引号
                 escaped_text = f"'{text}'"
                 
-            cmd = ["adb", "-s", device_id, "shell", "input", "text", escaped_text]
+            cmd = self._adb_command("shell", "input", "text", escaped_text, device_id=device_id)
             
             kwargs = {}
             if self.system == 'Windows':
@@ -806,7 +825,7 @@ class ScrcpyController:
                 return False
                 
         except Exception as e:
-            print(f"发送文本输入到设备 {device_id} 失败: {e}")
+            console_log(f"发送文本输入到设备 {device_id} 失败: {e}", "ERROR")
             return False
             
     def get_screen_size(self, device_id):
@@ -820,7 +839,7 @@ class ScrcpyController:
             tuple: (宽, 高)，如果获取失败则返回None
         """
         try:
-            cmd = ["adb", "-s", device_id, "shell", "wm", "size"]
+            cmd = self._adb_command("shell", "wm", "size", device_id=device_id)
             
             kwargs = {}
             if self.system == 'Windows':
@@ -845,7 +864,7 @@ class ScrcpyController:
             return None
             
         except Exception as e:
-            print(f"获取设备 {device_id} 屏幕尺寸失败: {e}")
+            console_log(f"获取设备 {device_id} 屏幕尺寸失败: {e}", "ERROR")
             return None
             
     def sync_touch_from_main_to_slaves(self, main_device_id, slave_device_ids, x, y, action="tap"):
@@ -867,12 +886,12 @@ class ScrcpyController:
         
         # 记录开始时间
         start_time = time.time()
-        print(f"开始同步操作 {action} 到 {len(slave_device_ids)} 个设备...")
+        console_log(f"开始同步操作 {action} 到 {len(slave_device_ids)} 个设备...")
             
         # 获取主设备分辨率
         main_size = self.get_screen_size(main_device_id)
         if not main_size:
-            print(f"无法获取主设备 {main_device_id} 屏幕尺寸")
+            console_log(f"无法获取主设备 {main_device_id} 屏幕尺寸", "WARN")
             return False
             
         main_width, main_height = main_size
@@ -896,7 +915,7 @@ class ScrcpyController:
             screen_area = y_zone * 3 + x_zone  # 0-8的值表示9个区域
             
             zone_names = ["左上", "中上", "右上", "左中", "中心", "右中", "左下", "中下", "右下"]
-            print(f"主设备点击区域: {zone_names[screen_area]}，坐标比例: ({x_ratio:.2f}, {y_ratio:.2f})")
+            console_log(f"主设备点击区域: {zone_names[screen_area]}，坐标比例: ({x_ratio:.2f}, {y_ratio:.2f})")
             
         elif action == "swipe":
             # 处理滑动事件的坐标
@@ -920,7 +939,7 @@ class ScrcpyController:
                                 x2, y2 = y, action
                                 action = "swipe"  # 确保动作类型正确
                         else:
-                            print(f"不支持的滑动坐标格式")
+                            console_log("不支持的滑动坐标格式", "WARN")
                             return False
                         
                         x1_ratio = x1 / main_width
@@ -928,11 +947,11 @@ class ScrcpyController:
                         x2_ratio = x2 / main_width
                         y2_ratio = y2 / main_height
                     except Exception as e:
-                        print(f"滑动坐标解析错误: {e}")
+                        console_log(f"滑动坐标解析错误: {e}", "ERROR")
                         return False
             else:
                 # 坐标格式错误
-                print("滑动坐标格式错误")
+                console_log("滑动坐标格式错误", "WARN")
                 return False
                 
             # 获取滑动方向
@@ -957,7 +976,7 @@ class ScrcpyController:
                     direction = "上"
                     strength = "强" if dy < -0.3 else "弱"
                 
-            print(f"主设备滑动: {strength}{direction}滑，从({x1_ratio:.2f}, {y1_ratio:.2f})到({x2_ratio:.2f}, {y2_ratio:.2f})")
+            console_log(f"主设备滑动: {strength}{direction}滑，从({x1_ratio:.2f}, {y1_ratio:.2f})到({x2_ratio:.2f}, {y2_ratio:.2f})")
             
         # 所有成功执行的设备计数
         success_count = 0
@@ -975,7 +994,7 @@ class ScrcpyController:
                 # 获取从设备分辨率
                 slave_size = self.get_screen_size(slave_id)
                 if not slave_size:
-                    print(f"无法获取从设备 {slave_id} 屏幕尺寸")
+                    console_log(f"无法获取从设备 {slave_id} 屏幕尺寸", "WARN")
                     failed_devices.append(slave_id)
                     continue
                     
@@ -988,7 +1007,7 @@ class ScrcpyController:
                 # 检查主设备和从设备方向是否一致
                 orientation_consistent = (main_orientation == slave_orientation)
                 if not orientation_consistent:
-                    print(f"警告: 设备 {slave_id} 的屏幕方向({slave_orientation})与主设备({main_orientation})不一致")
+                    console_log(f"设备 {slave_id} 的屏幕方向({slave_orientation})与主设备({main_orientation})不一致", "WARN")
                 
                 # 将比例换算为目标设备上的像素坐标
                 if action == "tap" or action == "long":
@@ -1028,7 +1047,7 @@ class ScrcpyController:
                     target_x = max(1, min(target_x, slave_width - 1))
                     target_y = max(1, min(target_y, slave_height - 1))
                     
-                    print(f"同步{action}事件到设备{slave_id}: ({target_x}, {target_y}) [主设备比例: ({x_ratio:.2f}, {y_ratio:.2f})]")
+                    console_log(f"同步{action}事件到设备{slave_id}: ({target_x}, {target_y}) [主设备比例: ({x_ratio:.2f}, {y_ratio:.2f})]")
                     
                     # 执行命令
                     if action == "tap":
@@ -1159,16 +1178,17 @@ class ScrcpyController:
                     target_x2 = max(1, min(target_x2, slave_width - 1))
                     target_y2 = max(1, min(target_y2, slave_height - 1))
                     
-                    print(f"同步滑动到设备{slave_id}: ({target_x1}, {target_y1}) -> ({target_x2}, {target_y2})")
+                    console_log(f"同步滑动到设备{slave_id}: ({target_x1}, {target_y1}) -> ({target_x2}, {target_y2})")
                     
                     # 执行滑动命令
                     result = self.send_touch_event(
                         slave_id, 
                         (target_x1, target_y1, target_x2, target_y2), 
+                        None,
                         "swipe"
                     )
                 else:
-                    print(f"未知的操作类型: {action}")
+                    console_log(f"未知的操作类型: {action}", "WARN")
                     result = False
                     
                 if result:
@@ -1177,7 +1197,7 @@ class ScrcpyController:
                     # 命令失败，记录失败设备
                     failed_devices.append(slave_id)
                     # 尝试智能重试
-                    print(f"设备{slave_id}命令失败，尝试重试...")
+                    console_log(f"设备{slave_id}命令失败，尝试重试...", "WARN")
                     # 等待一小段时间后重试
                     time.sleep(1.0)
                     if action == "tap":
@@ -1186,12 +1206,12 @@ class ScrcpyController:
                         retry_y = target_y + random.randint(-15, 15)
                         result = self.send_touch_event(slave_id, retry_x, retry_y, "tap")
                         if result:
-                            print(f"设备{slave_id}重试成功: ({retry_x}, {retry_y})")
+                            console_log(f"设备{slave_id}重试成功: ({retry_x}, {retry_y})")
                             success_count += 1
                             failed_devices.remove(slave_id)
             except Exception as e:
                 failed_devices.append(slave_id)
-                print(f"同步操作到设备 {slave_id} 出错: {e}")
+                console_log(f"同步操作到设备 {slave_id} 出错: {e}", "ERROR")
             
             # 每个设备操作后等待一小段时间，避免并发命令可能的问题
             if device_idx < len(slave_device_ids) - 1:
@@ -1202,11 +1222,11 @@ class ScrcpyController:
         
         # 完整的结果报告
         if failed_devices:
-            print(f"同步操作完成，耗时 {elapsed_time:.2f}秒，成功率: {success_count}/{len(slave_device_ids)}")
-            print(f"失败设备: {', '.join(failed_devices)}")
+            console_log(f"同步操作完成，耗时 {elapsed_time:.2f}秒，成功率: {success_count}/{len(slave_device_ids)}", "WARN")
+            console_log(f"失败设备: {', '.join(failed_devices)}", "WARN")
             return False
         else:
-            print(f"同步操作完成，耗时 {elapsed_time:.2f}秒，全部成功")
+            console_log(f"同步操作完成，耗时 {elapsed_time:.2f}秒，全部成功")
             return True
         
     def get_screen_orientation(self, device_id):
@@ -1219,30 +1239,18 @@ class ScrcpyController:
             str: 'portrait'或'landscape'
         """
         try:
-            cmd = ["adb", "-s", device_id, "shell", "dumpsys", "input", "|", "grep", "SurfaceOrientation"]
-            
             kwargs = {}
             if self.system == 'Windows':
                 kwargs['creationflags'] = subprocess.CREATE_NO_WINDOW
-                cmd = " ".join(cmd)  # Windows下使用shell=True需要字符串命令
-                
-                process = subprocess.Popen(
-                    cmd,
-                    stdout=subprocess.PIPE,
-                    stderr=subprocess.PIPE,
-                    shell=True,
-                    **kwargs
-                )
-            else:
-                process = subprocess.Popen(
-                    cmd,
-                    stdout=subprocess.PIPE,
-                    stderr=subprocess.PIPE,
-                    **kwargs
-                )
-                
-            stdout, stderr = process.communicate(timeout=3)
-            output = stdout.decode('utf-8')
+            result = subprocess.run(
+                self._adb_command("shell", "dumpsys", "input", device_id=device_id),
+                capture_output=True,
+                text=True,
+                check=False,
+                timeout=3,
+                **kwargs
+            )
+            output = result.stdout or ""
             
             # 检查输出中的方向信息
             if "SurfaceOrientation: 0" in output or "SurfaceOrientation: 2" in output:
@@ -1260,7 +1268,7 @@ class ScrcpyController:
                 return "portrait"
                 
         except Exception as e:
-            print(f"获取设备 {device_id} 屏幕方向失败: {e}")
+            console_log(f"获取设备 {device_id} 屏幕方向失败: {e}", "ERROR")
             return "portrait"  # 默认返回竖屏方向
 
     def create_sync_control_bridge(self, main_device_id, slave_device_ids):
@@ -1276,10 +1284,10 @@ class ScrcpyController:
         """
         try:
             if not main_device_id or not slave_device_ids:
-                print("主控设备或从设备为空，无法建立桥接")
+                console_log("主控设备或从设备为空，无法建立桥接", "WARN")
                 return False
                 
-            print(f"建立群控桥接: 主控设备 {main_device_id} -> {len(slave_device_ids)} 个从设备")
+            console_log(f"建立群控桥接: 主控设备 {main_device_id} -> {len(slave_device_ids)} 个从设备")
             
             # 确保所有设备都可用
             all_devices = slave_device_ids + [main_device_id]
@@ -1288,7 +1296,7 @@ class ScrcpyController:
             
             missing_devices = [device_id for device_id in all_devices if device_id not in available_ids]
             if missing_devices:
-                print(f"以下设备不可用: {', '.join(missing_devices)}")
+                console_log(f"以下设备不可用: {', '.join(missing_devices)}", "WARN")
                 return False
                 
             # 保存群控相关设置
@@ -1312,9 +1320,9 @@ class ScrcpyController:
                         "y_ratio": slave_size[1] / main_size[1]
                     }
                     
-            print(f"群控桥接建立成功，已为 {len(self.device_mapping)} 个设备创建映射关系")
+            console_log(f"群控桥接建立成功，已为 {len(self.device_mapping)} 个设备创建映射关系")
             return True
             
         except Exception as e:
-            print(f"建立群控桥接时出错: {e}")
+            console_log(f"建立群控桥接时出错: {e}", "ERROR")
             return False 

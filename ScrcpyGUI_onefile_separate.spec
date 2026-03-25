@@ -11,7 +11,7 @@ a = Analysis(
         ('README.md', '.'),
         ('CHANGE_LOG.md', '.'),
     ],
-    hiddenimports=[],
+    hiddenimports=['PyQt5.sip'],
     hookspath=[],
     hooksconfig={},
     runtime_hooks=[],

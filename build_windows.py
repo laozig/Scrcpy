@@ -7,26 +7,35 @@ Windows平台打包脚本
 """
 
 import os
-import shutil
 import argparse
 import subprocess
 import sys
 import zipfile
-from pathlib import Path
+
+from utils import console_log
+
+
+def _find_local_scrcpy_dir(base_dir):
+    candidates = []
+    for name in os.listdir(base_dir):
+        full_path = os.path.join(base_dir, name)
+        if os.path.isdir(full_path) and name.startswith("scrcpy-win64-v"):
+            candidates.append(full_path)
+    return sorted(candidates, reverse=True)[0] if candidates else None
 
 def build_windows_executable(spec_file=None, one_file=False, debug=False):
-    print(f"开始构建Windows可执行文件...")
+    console_log("开始构建Windows可执行文件...")
     
     # 确定spec文件（尝试一组候选，避免固定名称）
     if not spec_file:
         for candidate in ["ScrcpyGUI.spec", "ScrcpyGUI_separate.spec", "ScrcpyGUI_onefile_separate.spec"]:
             if os.path.exists(candidate):
                 spec_file = candidate
-                print(f"未指定spec，使用找到的文件: {spec_file}")
+                console_log(f"未指定spec，使用找到的文件: {spec_file}")
                 break
     # 如果用户指定或默认候选不存在，再提示
     if not spec_file or not os.path.exists(spec_file):
-        print(f"错误: 找不到可用的spec文件（期望之一: ScrcpyGUI.spec / ScrcpyGUI_separate.spec / ScrcpyGUI_onefile_separate.spec）")
+        console_log("错误: 找不到可用的spec文件（期望之一: ScrcpyGUI.spec / ScrcpyGUI_separate.spec / ScrcpyGUI_onefile_separate.spec）", "ERROR")
         return False
     
     # 构建命令
@@ -47,48 +56,48 @@ def build_windows_executable(spec_file=None, one_file=False, debug=False):
             cmd.append("--debug=all")
             
         # 添加scrcpy相关文件
-        scrcpy_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "scrcpy-win64-v3.2")
+        scrcpy_dir = _find_local_scrcpy_dir(os.path.dirname(os.path.abspath(__file__)))
         if os.path.exists(scrcpy_dir):
-            print(f"添加scrcpy目录: {scrcpy_dir}")
+            console_log(f"添加scrcpy目录: {scrcpy_dir}")
             cmd.append("--add-data")
             if sys.platform == "win32":
-                cmd.append(f"{scrcpy_dir};scrcpy-win64-v3.2")
+                cmd.append(f"{scrcpy_dir};{os.path.basename(scrcpy_dir)}")
             else:
-                cmd.append(f"{scrcpy_dir}:scrcpy-win64-v3.2")
+                cmd.append(f"{scrcpy_dir}:{os.path.basename(scrcpy_dir)}")
         else:
-            print(f"警告: 未找到scrcpy目录: {scrcpy_dir}")
+            console_log("警告: 未找到本地 scrcpy 目录，打包产物将依赖外部环境", "WARN")
             
         cmd.append(spec_file)
     
     # 执行打包命令
     try:
-        print(f"执行命令: {' '.join(cmd)}")
+        console_log(f"执行命令: {' '.join(cmd)}")
         result = subprocess.run(cmd)
         
         if result.returncode != 0:
-            print("构建失败，退出码:", result.returncode)
+            console_log(f"构建失败，退出码: {result.returncode}", "ERROR")
             return False
         
-        print("构建成功!")
+        console_log("构建成功!")
         
         # 打印可执行文件路径
         if one_file:
             exe_path = os.path.abspath("dist/ScrcpyGUI.exe")
             if os.path.exists(exe_path):
                 file_size = os.path.getsize(exe_path) / (1024 * 1024)
-                print(f"可执行文件已生成: {exe_path} ({file_size:.2f} MB)")
+                console_log(f"可执行文件已生成: {exe_path} ({file_size:.2f} MB)")
             else:
-                print(f"警告: 未找到生成的可执行文件: {exe_path}")
+                console_log(f"警告: 未找到生成的可执行文件: {exe_path}", "WARN")
         else:
             dist_dir = os.path.abspath("dist/ScrcpyGUI")
             if os.path.exists(dist_dir):
-                print(f"程序目录已生成: {dist_dir}")
+                console_log(f"程序目录已生成: {dist_dir}")
             else:
-                print(f"警告: 未找到生成的程序目录: {dist_dir}")
+                console_log(f"警告: 未找到生成的程序目录: {dist_dir}", "WARN")
         
         return True
     except Exception as e:
-        print(f"构建过程中出现错误: {e}")
+        console_log(f"构建过程中出现错误: {e}", "ERROR")
         return False
 
 def create_zip_archive(archive_name=None):
@@ -96,7 +105,7 @@ def create_zip_archive(archive_name=None):
     dist_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'dist')
     
     if not os.path.exists(dist_dir):
-        print(f"错误: 没有找到打包后的dist目录")
+        console_log("错误: 没有找到打包后的dist目录", "ERROR")
         return False
     
     if not archive_name:
@@ -121,13 +130,13 @@ def create_zip_archive(archive_name=None):
                         rel_path = os.path.relpath(file_path, executable_dir)
                         zipf.write(file_path, rel_path)
             
-            print(f"成功创建压缩包: {zip_path}")
+            console_log(f"成功创建压缩包: {zip_path}")
             return True
         else:
-            print(f"错误: 找不到可执行文件目录: {executable_dir}")
+            console_log(f"错误: 找不到可执行文件目录: {executable_dir}", "ERROR")
             return False
     except Exception as e:
-        print(f"创建压缩包时出错: {e}")
+        console_log(f"创建压缩包时出错: {e}", "ERROR")
         return False
 
 def main():
@@ -142,16 +151,16 @@ def main():
     
     # 构建可执行文件
     if build_windows_executable(args.spec, args.onefile, args.debug):
-        print("构建完成!")
+        console_log("构建完成!")
         
         # 如果需要创建ZIP归档
         if args.zip:
             if create_zip_archive(args.zip_name):
-                print("ZIP归档创建成功!")
+                console_log("ZIP归档创建成功!")
             else:
-                print("ZIP归档创建失败!")
+                console_log("ZIP归档创建失败!", "ERROR")
     else:
-        print("构建失败!")
+        console_log("构建失败!", "ERROR")
         return 1
     
     return 0

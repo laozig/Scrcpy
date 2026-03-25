@@ -1,97 +1,179 @@
 # ScrcpyGUI
 
-**一个基于 scrcpy 的安卓设备屏幕控制图形界面**
+**一个面向 Windows 的 Android 投屏与辅助管理图形界面，基于 scrcpy 构建。**
 
-本项目为 scrcpy 提供更直观的桌面操作界面，简化设备连接、镜像控制与常用配置流程。
+本项目为 `scrcpy` 提供更直观的桌面操作入口，重点解决以下问题：
+- 设备连接路径不统一
+- scrcpy/adb 环境部署麻烦
+- 常用投屏参数需要反复手输
+- 截图、录屏、应用管理、诊断信息分散
 
-依赖项目：scrcpy https://github.com/Genymobile/scrcpy
+依赖项目：<https://github.com/Genymobile/scrcpy>
 
 [English](#english) | [中文](#中文)
 
+---
+
 ## 中文
 
-### 界面截图
-![XWzoPw3pCADd9YAqjq1UzM8VWTUpY76u.webp](https://cdn.nodeimage.com/i/XWzoPw3pCADd9YAqjq1UzM8VWTUpY76u.webp)
-![HcBpvP8R4XRq7UQO2R3Z8FEiu1P4zncx.webp](https://cdn.nodeimage.com/i/HcBpvP8R4XRq7UQO2R3Z8FEiu1P4zncx.webp)
+### 项目定位
 
-### 主要功能
+ScrcpyGUI 是一个偏“实用工具型”的桌面应用，核心目标是：
 
-- 设备连接与管理：USB/无线连接、设备列表自动刷新、一键连接所有设备
-- 设备屏幕镜像：支持多设备同时运行，窗口标题包含设备信息便于识别
-- 镜像参数：码率、最大尺寸、方向限制等常用参数快速配置
-- 录屏与截图：支持录制格式选择、保存路径配置、批量截图
-- 窗口与交互：全屏、置顶、显示触摸、仅显示（无交互）、禁用剪贴板
-- 应用管理器：应用列表、搜索与排序、启动/停止/卸载、系统应用筛选
-- 环境自动识别：优先使用项目内置 scrcpy-win64-v3.2，其次使用系统 PATH
-- 同步群控：维护中，暂不保证稳定
+1. **快速连接 Android 设备进行投屏**
+2. **降低 scrcpy/adb 环境配置门槛**
+3. **把常用投屏控制、截图、录屏、应用管理集中到一个界面中**
+4. **为环境问题提供可诊断、可追踪、可覆盖的路径解析机制**
 
-### 详细说明文档
+---
 
-请查阅 [使用说明文档.md](使用说明文档.md) 获取更多信息，包括：
-- 安装步骤
-- 使用方法
-- 打包说明
-- 故障排除
+### 当前主要功能
 
-### 环境要求
+#### 1. 设备连接与投屏
+- USB 连接投屏
+- WiFi 连接投屏
+- 设备列表自动刷新
+- 显示设备状态（可用 / 离线 / 未授权）
+- 窗口标题自动带设备型号和设备 ID
+- 运行中切换“窗口置顶”可即时生效
 
-- Windows系统 (已测试：Windows 10/11)
-- Python 3.8+
-- scrcpy/adb环境（支持以下任一方式）
-  - 项目目录下的 `scrcpy-win64-v3.2`
-  - 系统 PATH 中已安装的 scrcpy/adb
-  - 运行 `python setup_scrcpy.py` 一键下载并配置
+#### 2. 投屏参数与预设
+- 视频码率
+- 最大尺寸
+- 最大帧率
+- 视频编码器选择
+- 方向限制
+- 显示 ID
+- Crop 裁剪参数校验
+- 参数预设与设备专属参数记忆
+- 纯录制模式 / 无窗口模式联动
+
+#### 3. 截图与录屏
+- 普通截图
+- 快速截图到默认目录
+- 截图按日期归档
+- 录屏路径选择
+- 录屏完成后自动打开目录或文件
+
+#### 4. 应用管理器
+- 已安装应用列表
+- 搜索、拼音搜索、首字母搜索
+- 用户应用 / 系统应用过滤
+- 最近操作应用过滤
+- 前台应用定位
+- 启动、停止、卸载应用
+- 清除数据 / 清缓存
+- 导出 APK
+- 查看应用详细信息
+
+#### 5. 环境与诊断
+- 环境自检
+- 一键诊断报告
+- 显示 ADB / scrcpy / scrcpy-server 的**解析路径与来源**
+- 支持手动指定：
+  - ADB 路径
+  - scrcpy 路径
+  - scrcpy-server 路径
+- 支持恢复自动检测依赖路径
+
+---
+
+### 环境部署策略（当前实现）
+
+当前项目已经升级为更稳的依赖解析策略：
+
+**用户显式配置 > 打包内置 / 本地目录 > PATH > 常见安装目录 > 命令名兜底**
+
+也就是说：
+
+1. 如果你在程序里手动指定了 `adb.exe` / `scrcpy.exe` / `scrcpy-server.jar`，优先使用这些配置。
+2. 否则程序会优先搜索项目目录、打包目录、本地可执行文件目录。
+3. 再找系统 `PATH`。
+4. 再尝试常见安装目录。
+5. 最后才回退到 `adb` / `scrcpy` 这种命令名方式。
+
+默认安装脚本当前使用 **scrcpy 3.3.4**，但运行时并没有被锁死；你仍然可以在程序菜单中切换到任意更新版本的 scrcpy。
+
+---
 
 ### 快速开始
 
-1. 克隆或下载此仓库
-2. 运行 `pip install -r requirements.txt` 安装依赖
-3. 可选：运行 `python setup_scrcpy.py` 自动下载配置 scrcpy/adb
-4. 运行 `python main.py` 启动程序
-5. 连接 Android 设备并开启 USB 调试
+#### 方式一：开发运行
+
+1. 克隆或下载仓库
+2. 安装依赖
+
+```bash
+pip install -r requirements.txt
+```
+
+3. 可选：自动下载默认版 scrcpy 环境
+
+```bash
+python setup_scrcpy.py
+```
+
+4. 启动程序
+
+```bash
+python main.py
+```
+
+5. 在 Android 设备上开启 USB 调试并授权
+
+#### 方式二：使用现成 scrcpy 环境
+
+如果你已经在系统中安装了 scrcpy / adb，或者已有自己的 scrcpy 目录：
+
+- 可以直接运行程序
+- 也可以在程序菜单中手动指定 ADB / scrcpy / scrcpy-server 路径
+
+---
+
+### 文档导航
+
+- [使用说明文档.md](使用说明文档.md)：用户使用与部署说明
+- [ADB_GUIDE.md](ADB_GUIDE.md)：ADB 文件传输与常用命令
+- [VENV_GUIDE.md](VENV_GUIDE.md)：虚拟环境使用说明
+- [使用GitHub说明.md](使用GitHub说明.md)：仓库协作与发布说明
+- [CHANGE_LOG.md](CHANGE_LOG.md)：更新记录与变更摘要
+
+---
 
 ## English
 
-A GUI wrapper around scrcpy for controlling and mirroring Android device screens.
+ScrcpyGUI is a Windows-oriented GUI wrapper around `scrcpy` for Android screen mirroring and helper workflows.
 
-Powered by scrcpy: https://github.com/Genymobile/scrcpy
+### Key capabilities
+- USB / WiFi device connection
+- Screen mirroring with runtime topmost switching
+- Common scrcpy parameter presets and per-device profiles
+- Screenshot and recording workflows
+- App manager (search, filter, start/stop/uninstall, export APK)
+- Environment self-check and diagnosis report
+- Explicit dependency path override for:
+  - ADB
+  - scrcpy
+  - scrcpy-server
 
-### Key Features
+### Runtime dependency strategy
 
-- Device connection and management (USB/WiFi, auto refresh, one-click connect all)
-- Multi-device screen mirroring with descriptive window titles
-- Common mirror options: bitrate, max size, orientation limit
-- Recording and screenshots (format selection, save path, batch screenshots)
-- Window and interaction options: fullscreen, always on top, show touches, view-only, disable clipboard
-- App manager: list, search/sort, start/stop/uninstall, system app filter
-- Auto-detect local/system adb and scrcpy (bundled scrcpy-win64-v3.2 supported)
-- Sync group control: under maintenance, stability not guaranteed
+The project now uses this resolution order:
 
-### Detailed Documentation
+**User-configured path > bundled/local path > PATH > common install paths > command fallback**
 
-Please check [使用说明文档.md](使用说明文档.md) (Documentation in Chinese) for more information, including:
-- Installation steps
-- Usage guide
-- Packaging instructions
-- Troubleshooting
+Default installer version is currently **scrcpy 3.3.4**, but runtime usage is not hard-locked; users can still point the app to a newer scrcpy version manually.
 
-### Requirements
+### Quick start
 
-- Windows system (tested on Windows 10/11)
-- Python 3.8+
-- scrcpy/adb available in one of these ways:
-  - `scrcpy-win64-v3.2` under the project directory
-  - scrcpy/adb installed in system PATH
-  - run `python setup_scrcpy.py` to download and configure automatically
+```bash
+pip install -r requirements.txt
+python setup_scrcpy.py   # optional
+python main.py
+```
 
-### Quick Start
-
-1. Clone or download this repository
-2. Run `pip install -r requirements.txt` to install dependencies
-3. Optional: run `python setup_scrcpy.py` to download and configure scrcpy/adb
-4. Run `python main.py` to start the program
-5. Connect your Android device with USB debugging enabled
+---
 
 ## 许可证 / License
 
-[MIT License](LICENSE) 
+[MIT License](LICENSE)

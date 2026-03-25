@@ -1,59 +1,89 @@
 #!/usr/bin/env python
 # -*- coding: utf-8 -*-
 
+import html
 import sys
 import os
 import subprocess
-import time
-import math
-from functools import partial
+import ctypes
+from ctypes import wintypes
 from PyQt5.QtWidgets import (
-    QApplication, QMainWindow, QVBoxLayout, QHBoxLayout, QWidget, QLabel, 
+    QApplication, QMainWindow, QVBoxLayout, QHBoxLayout, QWidget, QLabel,
     QComboBox, QPushButton, QLineEdit, QFileDialog, QMessageBox, QTextEdit,
-    QAction, QMenu, QMenuBar, QFrame, QCheckBox, QGroupBox, QGridLayout, QDialog,
-    QListWidget, QDialogButtonBox, QListWidgetItem
+    QAction, QCheckBox, QGroupBox, QGridLayout, QDialog
 )
-from PyQt5.QtCore import Qt, QProcess, QTimer, QEvent, QObject
-from PyQt5.QtGui import QIcon, QFont, QPalette, QColor, QPixmap
+from PyQt5.QtCore import Qt, QProcess, QTimer
+from PyQt5.QtGui import QFont, QPalette, QColor
 
+from command_service import ScrcpyCommandService
+from config_service import ConfigService
+from device_service import DeviceService
+from process_manager import ProcessManager
+from screenshot_service import ScreenshotService
 from scrcpy_controller import ScrcpyController
-from app_manager import AppManagerDialog
+from runtime_helpers import (
+    check_command_available,
+    find_adb_path as resolve_adb_path,
+    find_scrcpy_path as resolve_scrcpy_path,
+)
+from ui_support_service import UISupportService
+from utils import console_log, decode_process_output, open_path
+from wifi_service import WifiConnectionService
+
+APP_VERSION = "v1.0"
 
 class ScrcpyUI(QMainWindow):
     def __init__(self):
         super().__init__()
+        self.config_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "scrcpy_config.json")
+        self.config_service = ConfigService(self.config_path)
+        self.runtime_path_overrides = self.config_service.load_runtime_paths()
+        self.adb_resolution = {}
+        self.scrcpy_resolution = {}
         self.process = QProcess()
         self.process.readyReadStandardOutput.connect(self.handle_stdout)
         self.process.readyReadStandardError.connect(self.handle_stderr)
         self.adb_path = self.find_adb_path()  # 自动查找ADB路径
         self.scrcpy_path = self.find_scrcpy_path()  # 自动查找scrcpy路径
+        self.ui_support_service = UISupportService()
         
         # 设置应用图标
         self.set_application_icon()
-        
-        # 设备进程字典，用于跟踪多个设备的scrcpy进程
-        self.device_processes = {}
-        
-        # 添加进程跟踪列表，防止进程提前销毁
-        self.process_tracking = []
+
+        self.pending_selected_device = None
+        self.last_connected_device = None
+        self.device_status_map = {}
+        self.device_profiles = {}
+        self.device_window_titles = {}
+        self.current_profile_device_id = None
+        self.default_device_profile = {}
+        self._suspend_ui_reactions = False
+        self.screenshot_dir = ""
+        self.record_outputs = {}
+
+        self.process_manager = ProcessManager(self)
+        self.device_processes = self.process_manager.device_processes
+        self.control_bars = self.process_manager.control_bars
+        self.process_tracking = self.process_manager.process_tracking
         
         # 添加应用程序退出事件处理
         QApplication.instance().aboutToQuit.connect(self.cleanup_processes)
         
         # 标记应用状态，防止在对象销毁后访问
         self.is_closing = False
+        self._cleanup_done = False
         
         # 上次日志消息，用于避免重复
         self.last_log_message = ""
         self.repeat_count = 0
+        self.log_entries = []
         
         # 创建控制器
-        self.controller = ScrcpyController()
-        
-        # 群控相关变量
-        self.sync_control_enabled = False
-        self.main_device_id = None  # 主控设备ID
-        self.controlled_devices = []  # 被控设备ID列表
+        self.controller = ScrcpyController(adb_path=self.adb_path, scrcpy_path=self.scrcpy_path)
+        self.device_service = DeviceService(self.controller)
+        self.command_service = ScrcpyCommandService()
+        self.wifi_service = WifiConnectionService(self, self.adb_path, self.process_manager)
+        self.screenshot_service = ScreenshotService(self, self.controller)
         self.event_monitor = None  # 事件监控器
         
         # 计算界面缩放，先设置主题再应用尺寸缩放
@@ -62,105 +92,713 @@ class ScrcpyUI(QMainWindow):
         self.apply_scale_styles()
         
         self.initUI()
+
+        # 创建设备检查定时器
+        self.device_timer = QTimer()
+        self.device_timer.timeout.connect(self.check_devices)
+
+        self.load_config()
+        self.default_device_profile = self.config_service.collect_device_profile(self)
         
         # 检查ADB是否可用
         if not self.check_adb_available():
-            QMessageBox.warning(self, "警告", f"ADB路径({self.adb_path})不可用。请检查ADB是否已安装并在环境变量中。")
-            self.log(f"警告: ADB路径({self.adb_path})不可用")
+            self.show_warning_message(
+                "警告",
+                f"ADB路径({self.adb_path})不可用。请检查ADB是否已安装并在环境变量中。",
+                show_dialog=True,
+            )
         else:
             self.log(f"使用ADB路径: {self.adb_path}")
             
         # 检查scrcpy是否可用
         if not self.check_scrcpy_available():
-            QMessageBox.warning(self, "警告", f"scrcpy路径({self.scrcpy_path})不可用。请检查scrcpy是否已安装并在环境变量中。")
-            self.log(f"警告: scrcpy路径({self.scrcpy_path})不可用")
+            self.show_warning_message(
+                "警告",
+                f"scrcpy路径({self.scrcpy_path})不可用。请检查scrcpy是否已安装并在环境变量中。",
+                show_dialog=True,
+            )
         else:
             self.log(f"使用scrcpy路径: {self.scrcpy_path}")
         
         # 初始加载设备列表
         self.check_devices()
-        
-        # 创建设备检查定时器，但初始状态根据auto_refresh_cb复选框来决定
-        self.device_timer = QTimer()
-        self.device_timer.timeout.connect(self.check_devices)
-        # 定时器将在initUI完成后根据自动刷新复选框状态启动
+
+        self._log_runtime_dependency_status(show_dialog=False)
+
+    def _track_process(self, process):
+        """跟踪QProcess生命周期，避免对象过早释放。"""
+        return self.process_manager.track_process(process)
+
+    def _cleanup_tracked_process(self, process):
+        """清理已结束的临时进程引用。"""
+        self.process_manager.cleanup_tracked_process(process)
+
+    def _build_single_device_command(self, device_id, window_title, window_x=100, window_y=100):
+        """委托命令服务基于当前界面状态构建 scrcpy 命令。"""
+        command, error, needs_warning = self.command_service.build_command_from_ui(
+            self,
+            self.scrcpy_path,
+            device_id,
+            window_title=window_title,
+            window_x=window_x,
+            window_y=window_y,
+        )
+        if error:
+            if needs_warning:
+                self.show_warning_message("警告", error, show_dialog=True)
+            else:
+                self.log(error)
+            return None
+        return command
+
+    def _launch_device_process(self, device_id, command, success_message=None):
+        """启动并跟踪单个设备的 scrcpy 进程。"""
+        self.record_outputs[device_id] = self._extract_record_output_path(command)
+        self.device_window_titles[device_id] = self._extract_window_title(command)
+        process = self.process_manager.launch_device_process(device_id, command, success_message)
+        self.last_connected_device = device_id
+        self.pending_selected_device = device_id
+        QTimer.singleShot(0, lambda: self.check_devices(False))
+        QTimer.singleShot(1200, lambda dev=device_id: self._apply_running_window_topmost_for_device(dev, log_result=False))
+        return process
+
+    def _extract_window_title(self, command):
+        """从 scrcpy 启动命令中提取窗口标题。"""
+        try:
+            if "--window-title" in command:
+                index = command.index("--window-title")
+                if index + 1 < len(command):
+                    return command[index + 1]
+        except ValueError:
+            pass
+        return ""
+
+    def _find_visible_windows_by_pid(self, pid):
+        """在 Windows 上根据进程 PID 查找可见顶层窗口句柄。"""
+        if os.name != "nt" or not pid:
+            return []
+
+        user32 = ctypes.windll.user32
+        handles = []
+        enum_proc = ctypes.WINFUNCTYPE(ctypes.c_bool, ctypes.c_void_p, ctypes.c_void_p)
+
+        def callback(hwnd, _lparam):
+            if not user32.IsWindowVisible(hwnd):
+                return True
+            if user32.GetWindowTextLengthW(hwnd) <= 0:
+                return True
+
+            window_pid = ctypes.c_ulong()
+            user32.GetWindowThreadProcessId(hwnd, ctypes.byref(window_pid))
+            if int(window_pid.value) == int(pid):
+                handles.append(hwnd)
+            return True
+
+        user32.EnumWindows(enum_proc(callback), 0)
+        return handles
+
+    def _find_visible_windows_by_title(self, title_text):
+        """在 Windows 上根据窗口标题模糊匹配可见顶层窗口。"""
+        if os.name != "nt" or not title_text:
+            return []
+
+        user32 = ctypes.windll.user32
+        handles = []
+        enum_proc = ctypes.WINFUNCTYPE(ctypes.c_bool, ctypes.c_void_p, ctypes.c_void_p)
+
+        def callback(hwnd, _lparam):
+            if not user32.IsWindowVisible(hwnd):
+                return True
+            length = user32.GetWindowTextLengthW(hwnd)
+            if length <= 0:
+                return True
+
+            buffer = ctypes.create_unicode_buffer(length + 1)
+            user32.GetWindowTextW(hwnd, buffer, length + 1)
+            current_title = buffer.value or ""
+            if title_text in current_title:
+                handles.append(hwnd)
+            return True
+
+        user32.EnumWindows(enum_proc(callback), 0)
+        return handles
+
+    def _set_window_topmost(self, hwnd, enabled):
+        """设置指定窗口是否置顶。"""
+        if os.name != "nt" or not hwnd:
+            return False
+
+        user32 = ctypes.windll.user32
+        user32.SetWindowPos.argtypes = [
+            wintypes.HWND,
+            wintypes.HWND,
+            ctypes.c_int,
+            ctypes.c_int,
+            ctypes.c_int,
+            ctypes.c_int,
+            ctypes.c_uint,
+        ]
+        user32.SetWindowPos.restype = wintypes.BOOL
+        insert_after = wintypes.HWND(-1 if enabled else -2)  # HWND_TOPMOST / HWND_NOTOPMOST
+        flags = 0x0001 | 0x0002 | 0x0010 | 0x0040  # SWP_NOSIZE | SWP_NOMOVE | SWP_NOACTIVATE | SWP_SHOWWINDOW
+        try:
+            return bool(user32.SetWindowPos(hwnd, insert_after, 0, 0, 0, 0, flags))
+        except Exception:
+            return False
+
+    def _apply_running_window_topmost_for_device(self, device_id, *, enabled=None, log_result=True):
+        """把当前 UI 的置顶状态应用到指定运行中的 scrcpy 窗口。"""
+        if os.name != "nt":
+            return False
+
+        process = self.device_processes.get(device_id)
+        if not process or process.state() != QProcess.Running:
+            return False
+
+        pid = int(process.processId()) if process.processId() else 0
+        if not pid:
+            return False
+
+        target_state = self.always_top_cb.isChecked() if enabled is None else bool(enabled)
+        handles = self._find_visible_windows_by_pid(pid)
+        if not handles:
+            handles = self._find_visible_windows_by_title(self.device_window_titles.get(device_id, ""))
+        applied_count = 0
+        for hwnd in handles:
+            if self._set_window_topmost(hwnd, target_state):
+                applied_count += 1
+
+        if applied_count and log_result:
+            action_text = "已置顶" if target_state else "已取消置顶"
+            self.log(f"设备 {device_id} 窗口{action_text}")
+        elif log_result and self.device_window_titles.get(device_id):
+            self.log(f"未找到设备 {device_id} 的窗口，暂未能即时更新置顶状态")
+        return applied_count > 0
+
+    def _apply_running_windows_topmost(self, *, enabled=None, log_result=True):
+        """把置顶选项即时应用到所有运行中的 scrcpy 窗口。"""
+        changed = False
+        for device_id, process in list(self.device_processes.items()):
+            if process and process.state() == QProcess.Running:
+                changed = self._apply_running_window_topmost_for_device(device_id, enabled=enabled, log_result=log_result) or changed
+        return changed
+
+    def _handle_always_on_top_changed(self, _state):
+        """运行中切换“窗口置顶”时，立即同步到已打开的 scrcpy 窗口。"""
+        enabled = self.always_top_cb.isChecked()
+        if not self._apply_running_windows_topmost(enabled=enabled, log_result=True):
+            if self._get_running_device_ids():
+                QTimer.singleShot(900, lambda state=enabled: self._apply_running_windows_topmost(enabled=state, log_result=True))
+
+    def _extract_record_output_path(self, command):
+        """从 scrcpy 启动命令中提取录屏输出路径。"""
+        try:
+            if "--record" in command:
+                index = command.index("--record")
+                if index + 1 < len(command):
+                    return command[index + 1]
+        except ValueError:
+            pass
+        return None
+
+    def _handle_recording_finished(self, device_id, record_path):
+        """录屏进程结束后按配置打开目录或文件。"""
+        if not record_path or not os.path.exists(record_path):
+            return
+
+        self.log(f"录屏文件已保存: {record_path}")
+        self.statusBar().showMessage(f"录屏已保存: {record_path}", 3000)
+
+        open_file = hasattr(self, 'open_record_file_action') and self.open_record_file_action.isChecked()
+        open_dir = hasattr(self, 'open_record_dir_action') and self.open_record_dir_action.isChecked()
+        if not open_file and not open_dir:
+            return
+
+        if open_file:
+            if open_path(record_path):
+                self.log(f"录屏完成，已打开文件: {record_path}")
+            else:
+                self.log(f"录屏完成，但打开文件失败: {record_path}")
+        elif open_dir:
+            record_dir = os.path.dirname(record_path)
+            if open_path(record_dir):
+                self.log(f"录屏完成，已打开目录: {record_dir}")
+            else:
+                self.log(f"录屏完成，但打开目录失败: {record_dir}")
+
+
+    def _get_running_device_ids(self):
+        return [
+            device_id for device_id, process in self.device_processes.items()
+            if process and process.state() == QProcess.Running
+        ]
+
+    def _run_cli_capture(self, command):
+        """执行命令并返回输出文本。"""
+        try:
+            kwargs = {
+                "capture_output": True,
+                "text": True,
+                "check": False,
+            }
+            if os.name == "nt":
+                kwargs["creationflags"] = subprocess.CREATE_NO_WINDOW
+            result = subprocess.run(command, **kwargs)
+            output = (result.stdout or "").strip()
+            error = (result.stderr or "").strip()
+            return result.returncode == 0, output or error or "(无输出)"
+        except Exception as e:
+            return False, str(e)
+
+    def collect_environment_health(self):
+        """收集启动环境自检信息。"""
+        dependencies = self.controller.check_dependencies()
+        device_entries = self.controller.get_device_statuses()
+        available_devices = [item for item in device_entries if item.get("status") == "device"]
+        wireless_devices = [item for item in available_devices if item.get("transport") == "wifi"]
+        offline_devices = [item for item in device_entries if item.get("status") == "offline"]
+        unauthorized_devices = [item for item in device_entries if item.get("status") == "unauthorized"]
+        return {
+            "adb_available": bool(dependencies.get("adb")),
+            "adb_version": dependencies.get("adb_version") or "未知",
+            "adb_path": self.adb_path,
+            "adb_source": (self.adb_resolution or {}).get("source", "unknown"),
+            "scrcpy_available": bool(dependencies.get("scrcpy")),
+            "scrcpy_version": dependencies.get("scrcpy_version") or "未知",
+            "scrcpy_path": self.scrcpy_path,
+            "scrcpy_source": (self.scrcpy_resolution or {}).get("source", "unknown"),
+            "scrcpy_server_path": (self.scrcpy_resolution or {}).get("server_path") or os.environ.get("SCRCPY_SERVER_PATH", ""),
+            "scrcpy_server_source": (self.scrcpy_resolution or {}).get("server_source") or "unknown",
+            "app_version": APP_VERSION,
+            "device_count": len(available_devices),
+            "wireless_count": len(wireless_devices),
+            "offline_count": len(offline_devices),
+            "unauthorized_count": len(unauthorized_devices),
+            "device_entries": device_entries,
+        }
+
+    def build_diagnosis_suggestions(self, health=None):
+        """根据当前诊断状态生成简单修复建议。"""
+        health = health or self.collect_environment_health()
+        suggestions = []
+
+        if not health.get("adb_available"):
+            suggestions.append("ADB 不可用：请确认 platform-tools 已安装，并检查 ADB 路径或环境变量配置。")
+
+        if not health.get("scrcpy_available"):
+            suggestions.append("scrcpy 不可用：请确认 scrcpy 已安装，并检查 scrcpy 路径或环境变量配置。")
+
+        if health.get("unauthorized_count", 0) > 0:
+            suggestions.append("检测到未授权设备：请在手机上确认 USB 调试授权，并重新插拔数据线或重新执行 adb devices。")
+
+        if health.get("offline_count", 0) > 0:
+            suggestions.append("检测到离线设备：请检查 USB/WiFi 连接状态，可尝试重新连接设备或执行 adb disconnect 后重连。")
+
+        if health.get("device_count", 0) == 0 and health.get("adb_available"):
+            suggestions.append("当前没有可用设备：请确认手机已开启开发者选项与 USB 调试，或检查无线连接是否成功。")
+
+        if health.get("wireless_count", 0) == 0 and health.get("device_count", 0) > 0:
+            suggestions.append("当前没有无线设备：如果需要 WiFi 投屏，请先通过 USB 执行 TCP/IP 模式并使用无线连接功能。")
+
+        if not suggestions:
+            suggestions.append("未发现明显异常：当前环境整体正常，如仍有问题，可复制诊断结果继续排查。")
+
+        return suggestions
+
+    def show_startup_health_panel(self):
+        """显示启动环境自检面板。"""
+        if getattr(self, "_startup_health_panel", None) is not None:
+            try:
+                self._startup_health_panel.raise_()
+                self._startup_health_panel.activateWindow()
+                return
+            except Exception:
+                self._startup_health_panel = None
+
+        health = self.collect_environment_health()
+        dialog = QDialog(self)
+        dialog.setWindowTitle("环境自检")
+        dialog.setMinimumWidth(440)
+        layout = QVBoxLayout(dialog)
+
+        title = QLabel("启动环境自检")
+        title.setStyleSheet("font-weight: 700; color: #2a7a6c; font-size: 14px;")
+        layout.addWidget(title)
+
+        grid = QGridLayout()
+        rows = [
+            ("ADB 是否可用", "是" if health["adb_available"] else "否"),
+            ("ADB 版本", health["adb_version"]),
+            ("scrcpy 是否可用", "是" if health["scrcpy_available"] else "否"),
+            ("scrcpy 版本", health["scrcpy_version"]),
+            ("当前版本", health["app_version"]),
+            ("可用设备数", str(health["device_count"])),
+            ("无线设备数", str(health["wireless_count"])),
+            ("离线设备数", str(health["offline_count"])),
+            ("未授权设备数", str(health["unauthorized_count"])),
+        ]
+        for row, (label_text, value_text) in enumerate(rows):
+            grid.addWidget(QLabel(f"{label_text}:"), row, 0)
+            value = QLabel(value_text)
+            value.setTextInteractionFlags(Qt.TextSelectableByMouse)
+            if value_text in ("否",):
+                value.setStyleSheet("color: #c85b52; font-weight: 600;")
+            elif value_text in ("是",):
+                value.setStyleSheet("color: #2a7a6c; font-weight: 600;")
+            grid.addWidget(value, row, 1)
+        layout.addLayout(grid)
+
+        if health["device_entries"]:
+            device_summary = QTextEdit()
+            device_summary.setReadOnly(True)
+            device_summary.setMaximumHeight(110)
+            lines = [
+                f"- {item.get('model', '未知设备')} ({item.get('device_id')}) [{item.get('status')}]"
+                for item in health["device_entries"]
+            ]
+            device_summary.setPlainText("\n".join(lines))
+            layout.addWidget(QLabel("设备摘要:"))
+            layout.addWidget(device_summary)
+
+        suggestion_text = QTextEdit()
+        suggestion_text.setReadOnly(True)
+        suggestion_text.setMaximumHeight(96)
+        suggestion_text.setPlainText("\n".join(f"- {item}" for item in self.build_diagnosis_suggestions(health)))
+        layout.addWidget(QLabel("建议处理:"))
+        layout.addWidget(suggestion_text)
+
+        btn_layout = QHBoxLayout()
+        refresh_btn = QPushButton("刷新状态")
+        refresh_btn.clicked.connect(lambda: (dialog.close(), setattr(self, "_startup_health_panel", None), QTimer.singleShot(0, self.show_startup_health_panel)))
+        diagnose_btn = QPushButton("一键诊断")
+        diagnose_btn.clicked.connect(self.run_one_click_diagnosis)
+        close_btn = QPushButton("关闭")
+        close_btn.clicked.connect(dialog.close)
+        btn_layout.addWidget(refresh_btn)
+        btn_layout.addWidget(diagnose_btn)
+        btn_layout.addStretch(1)
+        btn_layout.addWidget(close_btn)
+        layout.addLayout(btn_layout)
+
+        dialog.finished.connect(lambda *_args: setattr(self, "_startup_health_panel", None))
+        self._startup_health_panel = dialog
+        dialog.show()
+
+    def build_diagnosis_report(self):
+        """生成一键诊断报告。"""
+        health = self.collect_environment_health()
+        sections = []
+        path_lines = [
+            f"ADB 路径: {health.get('adb_path')}",
+            f"ADB 来源: {health.get('adb_source')}",
+            f"scrcpy 路径: {health.get('scrcpy_path')}",
+            f"scrcpy 来源: {health.get('scrcpy_source')}",
+            f"scrcpy-server 路径: {health.get('scrcpy_server_path') or '未设置'}",
+            f"scrcpy-server 来源: {health.get('scrcpy_server_source')}",
+        ]
+        sections.append(("路径解析", "\n".join(path_lines)))
+        ok, adb_devices_output = self._run_cli_capture([self.adb_path, "devices", "-l"])
+        sections.append(("adb devices", adb_devices_output))
+
+        ok, adb_version_output = self._run_cli_capture([self.adb_path, "version"])
+        sections.append(("adb version", adb_version_output))
+
+        ok, scrcpy_version_output = self._run_cli_capture([self.scrcpy_path, "--version"])
+        sections.append(("scrcpy --version", scrcpy_version_output))
+
+        statuses = health["device_entries"]
+        status_lines = []
+        offline_exists = False
+        unauthorized_exists = False
+        for item in statuses:
+            status = item.get("status", "unknown")
+            offline_exists = offline_exists or status == "offline"
+            unauthorized_exists = unauthorized_exists or status == "unauthorized"
+            status_lines.append(
+                f"{item.get('model', '未知设备')} ({item.get('device_id')}) -> 状态: {status}, 连接: {item.get('transport', 'usb')}"
+            )
+        if not status_lines:
+            status_lines.append("未检测到任何设备")
+        status_lines.append(f"存在离线设备: {'是' if offline_exists else '否'}")
+        status_lines.append(f"存在未授权设备: {'是' if unauthorized_exists else '否'}")
+        sections.append(("设备授权/状态诊断", "\n".join(status_lines)))
+
+        suggestion_lines = [f"- {item}" for item in self.build_diagnosis_suggestions(health)]
+        sections.append(("建议处理", "\n".join(suggestion_lines)))
+
+        report_lines = []
+        for title, content in sections:
+            report_lines.append(f"## {title}\n{content}\n")
+        return "\n".join(report_lines).strip()
+
+    def run_one_click_diagnosis(self):
+        """执行一键诊断并展示结果。"""
+        report = self.build_diagnosis_report()
+        self.log("已生成一键诊断报告")
+
+        dialog = QDialog(self)
+        dialog.setWindowTitle("一键诊断")
+        dialog.resize(760, 560)
+        layout = QVBoxLayout(dialog)
+
+        text_edit = QTextEdit()
+        text_edit.setReadOnly(True)
+        text_edit.setPlainText(report)
+        layout.addWidget(text_edit)
+
+        btn_layout = QHBoxLayout()
+        copy_btn = QPushButton("复制诊断结果")
+        copy_btn.clicked.connect(lambda: QApplication.clipboard().setText(report))
+        close_btn = QPushButton("关闭")
+        close_btn.clicked.connect(dialog.close)
+        btn_layout.addWidget(copy_btn)
+        btn_layout.addStretch(1)
+        btn_layout.addWidget(close_btn)
+        layout.addLayout(btn_layout)
+        dialog.exec_()
+
+    def _get_selected_device_entry(self):
+        device_id = self.device_combo.currentData() if hasattr(self, 'device_combo') else None
+        if not device_id:
+            return None, None
+        return device_id, self.device_status_map.get(device_id, {})
+
+    def _get_selected_device_model(self):
+        """获取当前选中设备的纯净型号名，避免夹带状态标签。"""
+        _device_id, entry = self._get_selected_device_entry()
+        model = (entry or {}).get("model")
+        if model:
+            return model
+        if hasattr(self, 'device_combo') and self.device_combo.currentIndex() >= 0:
+            text = self.device_combo.currentText()
+            return text.split(' (')[0].lstrip('★ ').strip()
+        return "未知设备"
+
+    def _save_profile_for_device(self, device_id):
+        """保存当前设备专属参数。"""
+        if not device_id:
+            return
+        self.device_profiles[device_id] = self.config_service.collect_device_profile(self)
+
+    def _apply_profile_for_device(self, device_id):
+        """应用设备专属参数，没有则退回默认参数。"""
+        if not device_id:
+            return
+        profile = self.device_profiles.get(device_id) or self.default_device_profile
+        self._suspend_ui_reactions = True
+        try:
+            self.config_service.apply_device_profile(self, profile)
+            self._sync_record_mode_options()
+            self._update_crop_validation_state()
+        finally:
+            self._suspend_ui_reactions = False
+
+    def _on_device_selection_changed(self, _index):
+        """设备切换时保存上一台设备参数并恢复当前设备参数。"""
+        current_id = self.device_combo.currentData() if hasattr(self, 'device_combo') else None
+        previous_id = getattr(self, 'current_profile_device_id', None)
+
+        if previous_id and previous_id != current_id:
+            self._save_profile_for_device(previous_id)
+
+        if current_id:
+            self._apply_profile_for_device(current_id)
+
+        self.current_profile_device_id = current_id
+        self._update_selected_device_status_hint()
+
+    def _apply_selected_preset(self):
+        """将当前所选预设应用到界面。"""
+        preset_name = self.preset_combo.currentText()
+        if preset_name == "自定义":
+            return
+        self._suspend_ui_reactions = True
+        try:
+            if self.command_service.apply_preset_to_ui(self, preset_name):
+                self._sync_record_mode_options()
+                self._update_crop_validation_state()
+                self.log(f"已应用参数预设：{preset_name}")
+        finally:
+            self._suspend_ui_reactions = False
+
+    def _sync_record_mode_options(self):
+        """同步纯录制/录屏/无窗口等互相关联的选项。"""
+        if self.record_only_cb.isChecked():
+            self.record_cb.setChecked(True)
+            self.record_cb.setEnabled(False)
+        else:
+            self.record_cb.setEnabled(True)
+
+    def _handle_record_only_changed(self, _state):
+        """纯录制模式切换时同步提示与联动。"""
+        self._sync_record_mode_options()
+        if self._suspend_ui_reactions:
+            return
+        self._set_preset_custom_if_needed()
+        if self.record_only_cb.isChecked():
+            self.statusBar().showMessage("已启用纯录制模式：将自动开启录制，并以无窗口方式运行", 4000)
+        else:
+            self.statusBar().showMessage("已退出纯录制模式", 2500)
+
+    def _set_preset_custom_if_needed(self, *_args):
+        """用户手动修改参数后，将预设标记为自定义。"""
+        if self._suspend_ui_reactions:
+            return
+        if hasattr(self, 'preset_combo') and self.preset_combo.currentText() != "自定义":
+            self.preset_combo.setCurrentText("自定义")
+
+    def _update_crop_validation_state(self, *_args):
+        """即时校验裁剪参数格式。"""
+        if not hasattr(self, 'crop_input'):
+            return
+        crop_value = self.crop_input.text().strip()
+        if not crop_value:
+            self.crop_input.setStyleSheet("")
+            self.crop_input.setToolTip("裁剪格式：宽:高:X:Y")
+            return
+
+        _normalized, error = self.command_service._normalize_crop(crop_value)
+        if error:
+            self.crop_input.setStyleSheet("border: 1px solid #c85b52;")
+            self.crop_input.setToolTip(error)
+            if not self._suspend_ui_reactions:
+                self.statusBar().showMessage(error, 3000)
+        else:
+            self.crop_input.setStyleSheet("")
+            self.crop_input.setToolTip("裁剪格式有效")
+
+    def _show_device_selection_hint(self, action_text="操作", use_dialog=False):
+        """统一处理未选择设备时的提示。"""
+        message = f"请先选择一个设备后再执行“{action_text}”"
+        if hasattr(self, 'device_status_hint'):
+            self.device_status_hint.setText(message)
+            self.device_status_hint.setStyleSheet("color: #c85b52; font-weight: 600;")
+            self.device_status_hint.hide()
+        self.show_info_message("提示", message, log_message=message, show_dialog=use_dialog, duration=3000)
+
+    def _reset_device_selection_hint_style(self):
+        if hasattr(self, 'device_status_hint'):
+            self.device_status_hint.setStyleSheet("color: #6e6a64;")
+            self.device_status_hint.hide()
+
+    def _apply_device_item_styles(self):
+        """根据设备状态为下拉项设置颜色和提示。"""
+        if not hasattr(self, 'device_combo'):
+            return
+
+        for combo in [self.device_combo]:
+            if combo is None:
+                continue
+            for index in range(combo.count()):
+                device_id = combo.itemData(index)
+                entry = self.device_status_map.get(device_id, {})
+                status = entry.get("status", "device")
+                transport = entry.get("transport", "usb")
+                is_running = device_id in self._get_running_device_ids()
+                is_last = device_id == self.last_connected_device
+
+                if status == "offline":
+                    color = QColor(160, 90, 90)
+                    tip = "设备当前离线，请检查数据线或网络连接"
+                elif status == "unauthorized":
+                    color = QColor(196, 120, 40)
+                    tip = "设备未授权，请在手机上允许 USB 调试授权"
+                elif is_running:
+                    color = QColor(42, 122, 108)
+                    tip = "设备正在投屏中"
+                elif is_last:
+                    color = QColor(186, 145, 46)
+                    tip = "这是上次成功投屏的设备"
+                else:
+                    color = QColor(60, 60, 60) if transport == "usb" else QColor(66, 108, 180)
+                    tip = "设备可用"
+
+                combo.setItemData(index, color, Qt.ForegroundRole)
+                combo.setItemData(index, tip, Qt.ToolTipRole)
+
+    def _update_selected_device_status_hint(self):
+        """根据当前选中设备刷新状态提示与按钮可用性。"""
+        if not hasattr(self, 'device_status_hint'):
+            return
+
+        self._reset_device_selection_hint_style()
+
+        device_id, entry = self._get_selected_device_entry()
+        if not device_id:
+            self.device_status_hint.setText("当前未选择设备")
+            self.device_status_hint.hide()
+            self.usb_btn.setEnabled(False)
+            self.wifi_btn.setEnabled(False)
+            return
+
+        status = entry.get("status", "device")
+        transport = entry.get("transport", "usb")
+        is_running = device_id in self._get_running_device_ids()
+
+        if status == "device":
+            transport_text = "WiFi" if transport == "wifi" else "USB"
+            hint = f"当前设备可用，连接方式：{transport_text}"
+            if is_running:
+                hint += "，并且正在投屏"
+            self.usb_btn.setEnabled(True)
+            self.wifi_btn.setEnabled(True)
+        elif status == "offline":
+            hint = "当前设备处于离线状态，请检查连接后再操作"
+            self.usb_btn.setEnabled(False)
+            self.wifi_btn.setEnabled(False)
+        elif status == "unauthorized":
+            hint = "当前设备未授权，请先在设备上允许调试授权"
+            self.usb_btn.setEnabled(False)
+            self.wifi_btn.setEnabled(False)
+        else:
+            hint = f"当前设备状态：{status}"
+            self.usb_btn.setEnabled(False)
+            self.wifi_btn.setEnabled(False)
+
+        self.device_status_hint.setText(hint)
+        self.device_status_hint.hide()
+
+    def _ensure_selected_device_available(self, action_text):
+        if self.device_combo.currentIndex() < 0:
+            self._show_device_selection_hint(action_text)
+            return None
+
+        device_id, entry = self._get_selected_device_entry()
+        if not device_id:
+            self.show_warning_message("警告", "当前设备ID无效，请刷新设备列表后重试", show_dialog=True)
+            return None
+
+        status = entry.get("status", "device")
+        if status != "device":
+            status_label = "未授权" if status == "unauthorized" else ("离线" if status == "offline" else status)
+            self.show_warning_message("警告", f"当前设备状态为“{status_label}”，无法执行{action_text}", show_dialog=True)
+            return None
+
+        return device_id
+
+    def load_config(self):
+        """加载本地配置并恢复到界面。"""
+        self.config_service.load_into(self)
+
+    def save_config(self):
+        """保存当前界面配置。"""
+        self.config_service.save_from(self)
     
     def cleanup_processes(self):
         """在应用程序关闭前清理所有进程"""
-        try:
-            # 标记应用正在关闭
-            self.is_closing = True
-            print("开始清理进程...")
-            
-            # 停止事件监控
-            if hasattr(self, 'event_monitor') and self.event_monitor:
-                try:
-                    self.event_monitor.stop_monitoring()
-                    print("停止事件监控成功")
-                except Exception as e:
-                    print(f"停止事件监控时出错: {e}")
-                self.event_monitor = None
-            
-            # 清理所有控制栏
-            if hasattr(self, 'control_bars'):
-                for device_id, control_bar in list(self.control_bars.items()):
-                    try:
-                        control_bar.deleteLater()
-                        print(f"已删除设备 {device_id} 的控制栏")
-                    except Exception as e:
-                        print(f"删除控制栏时出错: {e}")
-                self.control_bars.clear()
-            
-            # 停止设备进程
-            if hasattr(self, 'device_processes'):
-                for device_id, process in list(self.device_processes.items()):
-                    try:
-                        if process and process.state() == QProcess.Running:
-                            print(f"正在终止设备 {device_id} 的进程...")
-                            # 断开所有信号连接
-                            try:
-                                process.disconnect()
-                            except Exception:
-                                pass
-                            
-                            process.kill()  # 强制结束进程
-                            process.waitForFinished(2000)  # 等待进程结束，增加超时时间
-                            print(f"已终止设备 {device_id} 的进程")
-                    except Exception as e:
-                        print(f"终止设备 {device_id} 进程时出错: {e}")
-            
-                # 清空进程字典
-                self.device_processes.clear()
-            
-            # 确保进程跟踪列表中的进程也被终止
-            if hasattr(self, 'process_tracking'):
-                for i, proc in enumerate(self.process_tracking):
-                    try:
-                        if proc and proc.state() == QProcess.Running:
-                            proc.disconnect()
-                            proc.kill()
-                            proc.waitForFinished(1000)
-                            print(f"已终止跟踪进程 #{i}")
-                    except Exception as e:
-                        print(f"终止跟踪进程 #{i} 时出错: {e}")
-                    
-                self.process_tracking.clear()
-            
-            # 确保主进程被终止
-            if hasattr(self, 'process') and self.process and self.process.state() == QProcess.Running:
-                try:
-                    self.process.disconnect()
-                    self.process.kill()
-                    self.process.waitForFinished(1000)
-                except Exception as e:
-                    print(f"终止主进程时出错: {e}")
-                
-            print("所有进程已清理完毕")
-        except Exception as e:
-            print(f"清理进程时出错: {e}")
+        if self._cleanup_done:
+            return
+        self._cleanup_done = True
+        self.process_manager.cleanup_before_exit(
+            main_process=self.process,
+            event_monitor=self.event_monitor,
+            timeout_ms=2000,
+        )
+        self.event_monitor = None
         
     def closeEvent(self, event):
         """重写关闭事件，确保进程被正确关闭"""
+        self.save_config()
         self.cleanup_processes()
         super().closeEvent(event)
         
@@ -172,134 +810,145 @@ class ScrcpyUI(QMainWindow):
         # 检查应用是否正在关闭    
         if hasattr(self, 'is_closing') and self.is_closing:
             # 在关闭状态仅打印到控制台
-            print(f"日志 (应用正在关闭): {message}")
+            console_log(f"日志 (应用正在关闭): {message}")
             return
             
         # 检查控件是否有效
         if not hasattr(self, 'log_text') or self.log_text is None or not hasattr(self.log_text, "append"):
-            print(f"日志 (控件无效): {message}")  # 控件无效时打印到控制台
+            console_log(f"日志 (控件无效): {message}", "WARN")  # 控件无效时打印到控制台
             return
             
         try:
-            # 添加时间戳
             import datetime
             timestamp = datetime.datetime.now().strftime("%H:%M:%S")
-            
-            # 处理重复消息
-            if hasattr(self, 'last_log_message') and message == self.last_log_message:
-                if hasattr(self, 'repeat_count'):
-                    self.repeat_count += 1
-                else:
-                    self.repeat_count = 1
-                    
-                # 删除最后一行
-                cursor = self.log_text.textCursor()
-                cursor.movePosition(cursor.End)
-                cursor.movePosition(cursor.StartOfLine, cursor.KeepAnchor)
-                cursor.removeSelectedText()
-                # 添加带计数的消息
-                self.log_text.append(f"[{timestamp}] {message} (x{self.repeat_count})")
-            else:
-                self.last_log_message = message
-                self.repeat_count = 1
-                self.log_text.append(f"[{timestamp}] {message}")
-            
-            # 限制日志行数，防止过长
-            max_lines = 500  # 最多保留500行
-            text = self.log_text.toPlainText()
-            lines = text.split('\n')
-            if len(lines) > max_lines:
-                # 保留最后max_lines行
-                new_text = '\n'.join(lines[-max_lines:])
-                self.log_text.setPlainText(new_text)
-            
-            # 仅在追加后滚动到底，避免频繁 repaint 卡顿
-            scrollbar = self.log_text.verticalScrollBar()
-            if scrollbar:
-                scrollbar.setValue(scrollbar.maximum())
-            
-            # 打印到控制台，增加调试信息
-            print(f"[{timestamp}] {message}")
-        except Exception as e:
-            print(f"添加日志时出错: {e}, 消息: {message}")
 
-    def handle_process_finished(self, device_id):
-        """处理进程结束事件"""
-        if device_id in self.device_processes:
-            del self.device_processes[device_id]
-            self.log(f"设备 {device_id} 的进程已结束")
-            
+            level = self._classify_log_level(message)
+            if self.log_entries and self.log_entries[-1]["message"] == message:
+                self.log_entries[-1]["count"] += 1
+                self.log_entries[-1]["timestamp"] = timestamp
+            else:
+                self.log_entries.append({
+                    "timestamp": timestamp,
+                    "message": message,
+                    "level": level,
+                    "count": 1,
+                })
+
+            self.last_log_message = message
+            self.repeat_count = self.log_entries[-1]["count"]
+
+            max_entries = 500
+            if len(self.log_entries) > max_entries:
+                self.log_entries = self.log_entries[-max_entries:]
+
+            self._refresh_log_view()
+            self._show_status_feedback(message, level)
+            console_log(message, level.upper())
+        except Exception as e:
+            console_log(f"添加日志时出错: {e}, 消息: {message}", "ERROR")
+
+    def _classify_log_level(self, message):
+        """根据消息内容判定日志级别。"""
+        message = (message or "").lower()
+        if any(keyword in message for keyword in ["错误", "error", "exception", "traceback"]):
+            return "error"
+        if any(keyword in message for keyword in ["警告", "失败", "未检测到", "未授权", "离线", "重试", "无效"]):
+            return "warning"
+        return "info"
+
+    def _get_visible_log_entries(self):
+        """按当前过滤条件返回可见日志。"""
+        if not hasattr(self, 'log_filter_combo'):
+            return self.log_entries
+
+        current_filter = self.log_filter_combo.currentText()
+        if current_filter == "仅错误":
+            return [item for item in self.log_entries if item["level"] == "error"]
+        if current_filter == "警告及错误":
+            return [item for item in self.log_entries if item["level"] in ("warning", "error")]
+        return self.log_entries
+
+    def _refresh_log_view(self, *_args):
+        """根据当前日志缓存刷新日志显示。"""
+        if not hasattr(self, 'log_text') or self.log_text is None:
+            return
+
+        color_map = {
+            "info": "#2a2a2a",
+            "warning": "#b06b00",
+            "error": "#b03a37",
+        }
+
+        html_lines = []
+        for item in self._get_visible_log_entries():
+            message = html.escape(item["message"])
+            suffix = f" <span style='color:#7b7770;'>(x{item['count']})</span>" if item["count"] > 1 else ""
+            html_lines.append(
+                f"<div style='color:{color_map.get(item['level'], '#2a2a2a')};'>"
+                f"[{item['timestamp']}] {message}{suffix}</div>"
+            )
+
+        self.log_text.setHtml("".join(html_lines) or "")
+        scrollbar = self.log_text.verticalScrollBar()
+        if scrollbar:
+            scrollbar.setValue(scrollbar.maximum())
+
+    def _show_status_feedback(self, message, level):
+        """把关键日志同步到状态栏。"""
+        if level in ("warning", "error"):
+            self.statusBar().showMessage(message, 3500)
+        elif any(keyword in message for keyword in ["已启动", "已停止", "已成功", "已保存", "已应用参数预设", "日志已导出"]):
+            self.statusBar().showMessage(message, 2500)
+
+    def show_info_message(self, title, message, *, log_message=None, show_dialog=True, duration=3000):
+        """统一的信息提示入口。"""
+        final_log = log_message or message
+        self.statusBar().showMessage(message, duration)
+        self.log(final_log)
+        if show_dialog:
+            QMessageBox.information(self, title, message)
+
+    def show_warning_message(self, title, message, *, log_message=None, show_dialog=True, duration=4000):
+        """统一的警告提示入口。"""
+        final_log = log_message or f"警告: {message}"
+        self.statusBar().showMessage(message, duration)
+        self.log(final_log)
+        if show_dialog:
+            QMessageBox.warning(self, title, message)
+
+    def ask_confirmation(self, title, message, *, default=QMessageBox.No, log_message=None):
+        """统一的确认对话框入口。"""
+        if log_message:
+            self.log(log_message)
+        self.statusBar().showMessage(message, 2500)
+        return QMessageBox.question(self, title, message, QMessageBox.Yes | QMessageBox.No, default)
+
+    def copy_log(self):
+        """复制当前可见日志到剪贴板。"""
+        visible_entries = self._get_visible_log_entries()
+        lines = []
+        for item in visible_entries:
+            suffix = f" (x{item['count']})" if item["count"] > 1 else ""
+            lines.append(f"[{item['timestamp']}] {item['message']}{suffix}")
+        QApplication.clipboard().setText("\n".join(lines))
+        self.statusBar().showMessage("日志已复制到剪贴板", 2500)
+
+    def export_log(self):
+        """导出当前可见日志到文本文件。"""
+        filename, _ = QFileDialog.getSaveFileName(self, "导出日志", "scrcpy_log.txt", "文本文件 (*.txt)")
+        if not filename:
+            return
+
+        visible_entries = self._get_visible_log_entries()
+        with open(filename, "w", encoding="utf-8") as f:
+            for item in visible_entries:
+                suffix = f" (x{item['count']})" if item["count"] > 1 else ""
+                f.write(f"[{item['timestamp']}] {item['message']}{suffix}\n")
+        self.log(f"日志已导出到: {filename}")
+
     def set_application_icon(self):
         """设置应用程序图标"""
-        try:
-            # 首先尝试从create_icon模块获取图标字节
-            try:
-                import create_icon
-                import io
-                from PyQt5.QtGui import QPixmap
-                
-                # 从字节直接创建图标
-                icon_bytes = create_icon.get_icon_bytes()
-                if icon_bytes:
-                    pixmap = QPixmap()
-                    pixmap.loadFromData(icon_bytes)
-                    if not pixmap.isNull():
-                        app_icon = QIcon(pixmap)
-                        self.setWindowIcon(app_icon)
-                        print("已设置内嵌图标")
-                        return
-            except Exception as e:
-                print(f"无法加载内嵌图标: {e}")
-                
-            # 如果内嵌图标不可用，尝试查找图标文件
-            icon_paths = [
-                "1.ico",                       # 当前目录
-                os.path.join(os.getcwd(), "1.ico"),  # 完整路径
-                os.path.join(os.path.dirname(os.path.abspath(__file__)), "1.ico"),  # 脚本目录
-                os.path.join(os.path.dirname(sys.executable), "1.ico"),  # 可执行文件目录
-            ]
-            
-            # 尝试加载ICO图标
-            for icon_path in icon_paths:
-                if os.path.exists(icon_path):
-                    try:
-                        app_icon = QIcon(icon_path)
-                        if not app_icon.isNull():
-                            self.setWindowIcon(app_icon)
-                            print(f"已设置窗口图标: {icon_path}")
-                            return
-                    except Exception as e:
-                        print(f"加载图标失败: {e}")
-            
-            print("没有找到有效的图标文件")
-            
-            # 最后尝试生成一个新的图标
-            try:
-                import create_icon
-                create_icon.create_simple_icon()
-                app_icon = QIcon("1.ico")
-                self.setWindowIcon(app_icon)
-                print("已设置新生成的图标")
-            except Exception as e:
-                print(f"生成图标失败: {e}")
-        
-        except Exception as e:
-            print(f"设置图标过程中出错: {e}")
-
-    def compute_ui_scale(self):
-        """根据可用屏幕尺寸计算界面缩放因子"""
-        try:
-            screen = QApplication.primaryScreen()
-            avail = screen.availableGeometry() if screen else None
-            if not avail:
-                return 0.9
-            w, h = avail.width(), avail.height()
-            base_w, base_h = 1920, 1080
-            scale = min(w / base_w, h / base_h)
-            # 限制缩放范围，让组件更紧凑一些
-            return max(0.75, min(scale, 1.0))
-        except Exception:
-            return 0.9
+        self.ui_support_service.set_window_icon(self)
 
     def compute_ui_scale_v2(self):
         """Compute a compact UI scale based on resolution and DPI."""
@@ -325,194 +974,6 @@ class ScrcpyUI(QMainWindow):
         except Exception:
             return 0.8
 
-    def apply_dark_theme(self):
-        """应用柔和的中性主题"""
-        palette = QPalette()
-        
-        # 设置柔和的颜色方案
-        background_color = QColor(250, 250, 250)  # 更柔和的白色背景
-        text_color = QColor(33, 33, 33)  # 稍深的文字颜色
-        highlight_color = QColor(66, 135, 245)  # 蓝色高亮
-        secondary_background = QColor(240, 240, 240)  # 次级背景
-        
-        # 应用颜色到调色板
-        palette.setColor(QPalette.Window, background_color)
-        palette.setColor(QPalette.WindowText, text_color)
-        palette.setColor(QPalette.Base, QColor(255, 255, 255))  # 白色背景
-        palette.setColor(QPalette.AlternateBase, secondary_background)
-        palette.setColor(QPalette.ToolTipBase, QColor(255, 255, 255))
-        palette.setColor(QPalette.ToolTipText, text_color)
-        palette.setColor(QPalette.Text, text_color)
-        palette.setColor(QPalette.Disabled, QPalette.Text, QColor(150, 150, 150))
-        palette.setColor(QPalette.Button, background_color)
-        palette.setColor(QPalette.ButtonText, text_color)
-        palette.setColor(QPalette.Disabled, QPalette.ButtonText, QColor(150, 150, 150))
-        palette.setColor(QPalette.BrightText, Qt.red)
-        palette.setColor(QPalette.Link, highlight_color)
-        palette.setColor(QPalette.Highlight, highlight_color)
-        palette.setColor(QPalette.HighlightedText, Qt.white)
-        
-        # 应用调色板
-        self.setPalette(palette)
-        
-        # 设置样式表
-        self.setStyleSheet("""
-            QGroupBox {
-                border: 1px solid #d0d0d0;
-                border-radius: 6px;
-                margin-top: 10px;
-                padding-top: 15px;
-                font-weight: bold;
-                background-color: #f8f8f8;
-            }
-            QGroupBox::title {
-                subcontrol-origin: margin;
-                subcontrol-position: top left;
-                left: 10px;
-                padding: 0 5px;
-                color: #4287f5;
-            }
-            QPushButton {
-                background-color: #4287f5;
-                color: white;
-                border: none;
-                border-radius: 4px;
-                padding: 6px 12px;
-                font-weight: bold;
-                min-height: 28px;
-            }
-            QPushButton:hover {
-                background-color: #3a75d8;
-            }
-            QPushButton:pressed {
-                background-color: #2b5db8;
-            }
-            QPushButton:disabled {
-                background-color: #cccccc;
-                color: #888888;
-            }
-            QPushButton#usb_btn, QPushButton#wifi_btn {
-                background-color: #4CAF50;
-            }
-            QPushButton#usb_btn:hover, QPushButton#wifi_btn:hover {
-                background-color: #45a049;
-            }
-            QPushButton#usb_btn:pressed, QPushButton#wifi_btn:pressed {
-                background-color: #388e3c;
-            }
-            QPushButton#connect_all_btn {
-                background-color: #FF9800;
-            }
-            QPushButton#connect_all_btn:hover {
-                background-color: #F57C00;
-            }
-            QPushButton#connect_all_btn:pressed {
-                background-color: #E65100;
-            }
-            QPushButton#stop_btn {
-                background-color: #f44336;
-            }
-            QPushButton#stop_btn:hover {
-                background-color: #e53935;
-            }
-            QPushButton#stop_btn:pressed {
-                background-color: #d32f2f;
-            }
-            QPushButton#screenshot_btn {
-                background-color: #2196F3;
-            }
-            QPushButton#screenshot_btn:hover {
-                background-color: #1E88E5;
-            }
-            QPushButton#screenshot_btn:pressed {
-                background-color: #1976D2;
-            }
-            QPushButton#clear_log_btn {
-                background-color: #757575;
-            }
-            QPushButton#clear_log_btn:hover {
-                background-color: #616161;
-            }
-            QPushButton#clear_log_btn:pressed {
-                background-color: #424242;
-            }
-            QLineEdit, QComboBox {
-                border: 1px solid #d0d0d0;
-                border-radius: 4px;
-                padding: 6px 10px;
-                background-color: white;
-                color: #333333;
-                min-height: 28px;
-            }
-            QComboBox::drop-down {
-                subcontrol-origin: padding;
-                subcontrol-position: center right;
-                width: 20px;
-                border-left: 1px solid #d0d0d0;
-            }
-            QComboBox QAbstractItemView {
-                border: 1px solid #d0d0d0;
-                background-color: white;
-                selection-background-color: #e5e5e5;
-                selection-color: #333333;
-            }
-            QCheckBox {
-                color: #333333;
-                spacing: 8px;
-            }
-            QCheckBox::indicator {
-                width: 18px;
-                height: 18px;
-                border: 1px solid #d0d0d0;
-                border-radius: 3px;
-                background-color: white;
-            }
-            QCheckBox::indicator:checked {
-                background-color: #4287f5;
-                border-color: #4287f5;
-            }
-            QCheckBox::indicator:hover {
-                border-color: #4287f5;
-            }
-            QTextEdit {
-                background-color: white;
-                border: 1px solid #d0d0d0;
-                color: #333333;
-                padding: 5px;
-            }
-            QScrollBar:vertical {
-                border: none;
-                background: #f0f0f0;
-                width: 10px;
-                margin: 0px;
-            }
-            QScrollBar::handle:vertical {
-                background: #c0c0c0;
-                min-height: 20px;
-                border-radius: 5px;
-            }
-            QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical {
-                height: 0px;
-            }
-            
-            /* 为导航按钮添加样式 */
-            QPushButton#home_btn, QPushButton#back_btn, QPushButton#menu_btn {
-                background-color: #673AB7;
-                color: white;
-                font-weight: bold;
-                padding: 8px 15px;
-                min-width: 100px;
-                border-radius: 4px;
-                margin: 2px;
-            }
-            QPushButton#home_btn:hover, QPushButton#back_btn:hover, QPushButton#menu_btn:hover {
-                background-color: #5E35B1;
-            }
-            QPushButton#home_btn:pressed, QPushButton#back_btn:pressed, QPushButton#menu_btn:pressed {
-                background-color: #512DA8;
-            }
-        """)
-    
     def apply_scale_styles(self):
         """根据计算的缩放因子微调字体和间距，让组件随屏幕缩放"""
         scale = getattr(self, 'ui_scale', 1.0)
@@ -767,116 +1228,12 @@ class ScrcpyUI(QMainWindow):
     def find_adb_path(self):
         """查找adb路径，优先使用程序目录中的adb"""
         try:
-            def dedup_repeated_dir(path):
-                """Collapse duplicated parent folders like foo/foo/file.ext"""
-                norm = os.path.normpath(path)
-                if os.path.exists(norm):
-                    return norm
-                parts = norm.split(os.sep)
-                if len(parts) >= 4 and parts[-2].lower() == parts[-3].lower():
-                    parts.pop(-3)
-                    collapsed = os.sep.join(parts)
-                    if os.path.exists(collapsed):
-                        return collapsed
-                return norm
-
-            def find_local_adb(base_dir):
-                """Search for adb under base_dir (depth limited)"""
-                if not base_dir or not os.path.isdir(base_dir):
-                    return None
-                candidates = ("adb.exe", "adb")
-                # Check root first
-                for name in candidates:
-                    root_candidate = os.path.join(base_dir, name)
-                    if os.path.isfile(root_candidate):
-                        return dedup_repeated_dir(root_candidate)
-                # Walk shallowly to avoid huge trees
-                max_depth = 2
-                for root, dirs, files in os.walk(base_dir):
-                    depth = os.path.relpath(root, base_dir).count(os.sep)
-                    if depth > max_depth:
-                        dirs[:] = []
-                        continue
-                    dirs[:] = [d for d in dirs if d not in (".git", ".venv", "__pycache__")]
-                    for name in candidates:
-                        candidate = os.path.join(root, name)
-                        if os.path.isfile(candidate):
-                            return dedup_repeated_dir(candidate)
-                return None
-
-            # PyInstaller packaged env: search inside bundle directory
-            if getattr(sys, 'frozen', False):
-                base_path = getattr(sys, '_MEIPASS', os.path.dirname(os.path.abspath(__file__)))
-                bundled_adb = find_local_adb(base_path)
-                if bundled_adb:
-                    self.log(f"使用打包的adb: {bundled_adb}")
-                    return bundled_adb
-            
-            # 首选运行目录，其次脚本目录（不固定文件夹名）
-            search_roots = []
-            cwd = os.getcwd()
-            if os.path.isdir(cwd):
-                search_roots.append(cwd)
-            script_dir = os.path.dirname(os.path.abspath(__file__))
-            if os.path.isdir(script_dir) and script_dir not in search_roots:
-                search_roots.append(script_dir)
-            exe_dir = os.path.dirname(sys.executable) if sys.executable else ""
-            if exe_dir and os.path.isdir(exe_dir) and exe_dir not in search_roots:
-                search_roots.append(exe_dir)
-            exe_dir = os.path.dirname(sys.executable) if sys.executable else ""
-            if exe_dir and os.path.isdir(exe_dir) and exe_dir not in search_roots:
-                search_roots.append(exe_dir)
-
-            for root in search_roots:
-                local_adb = find_local_adb(root)
-                if local_adb:
-                    self.log(f"使用本地adb: {local_adb}")
-                    return local_adb
-                
-            # 环境变量 PATH
-            if os.name == 'nt':
-                startupinfo = subprocess.STARTUPINFO()
-                startupinfo.dwFlags |= subprocess.STARTF_USESHOWWINDOW
-                creationflags = subprocess.CREATE_NO_WINDOW
-                result = subprocess.run(
-                    ['where', 'adb'],
-                    capture_output=True,
-                    text=True,
-                    check=False,
-                    startupinfo=startupinfo,
-                    creationflags=creationflags
-                )
-
-                if result.returncode == 0 and result.stdout:
-                    for line in result.stdout.splitlines():
-                        adb_candidate = line.strip()
-                        if adb_candidate:
-                            return adb_candidate
-            else:
-                # 在Linux和macOS下查找
-                result = subprocess.run(['which', 'adb'], 
-                                      capture_output=True, 
-                                      text=True, 
-                                      check=False)
-                
-                if result.returncode == 0 and result.stdout.strip():
-                    return result.stdout.strip()
-            
-            # 常见路径兜底
-            common_paths = [
-                os.path.join(os.environ.get('LOCALAPPDATA', ''), 'Android', 'sdk', 'platform-tools', 'adb.exe'),
-                os.path.join(os.environ.get('ProgramFiles', ''), 'Android', 'sdk', 'platform-tools', 'adb.exe'),
-                os.path.join(os.environ.get('ProgramFiles(x86)', ''), 'Android', 'sdk', 'platform-tools', 'adb.exe'),
-                '/usr/bin/adb',
-                '/usr/local/bin/adb'
-            ]
-        
-            for path in common_paths:
-                if os.path.isfile(path):
-                    return path
-            
-            # 仍然没有找到时返回默认命令名
-            return 'adb'
+            details = resolve_adb_path(
+                preferred_path=(self.runtime_path_overrides or {}).get("adb_path"),
+                return_details=True,
+            )
+            self.adb_resolution = details or {}
+            return (details or {}).get("path", "adb")
         except Exception as e:
             self.log(f"查找adb路径出错: {e}")
             return 'adb'
@@ -884,233 +1241,340 @@ class ScrcpyUI(QMainWindow):
     def find_scrcpy_path(self):
         """查找scrcpy路径"""
         try:
-            def dedup_repeated_dir(path):
-                """Collapse duplicated parent folders like foo/foo/file.ext"""
-                norm = os.path.normpath(path)
-                if os.path.exists(norm):
-                    return norm
-                parts = norm.split(os.sep)
-                if len(parts) >= 4 and parts[-2].lower() == parts[-3].lower():
-                    parts.pop(-3)
-                    collapsed = os.sep.join(parts)
-                    if os.path.exists(collapsed):
-                        return collapsed
-                return norm
-
-            def find_local_scrcpy(base_dir):
-                """Search for scrcpy under base_dir (depth limited)"""
-                if not base_dir or not os.path.isdir(base_dir):
-                    return None
-                candidates = ("scrcpy.exe", "scrcpy")
-                # Check root first
-                for name in candidates:
-                    root_candidate = os.path.join(base_dir, name)
-                    if os.path.isfile(root_candidate):
-                        return dedup_repeated_dir(root_candidate)
-                # Walk shallowly to avoid huge trees
-                max_depth = 2
-                for root, dirs, files in os.walk(base_dir):
-                    depth = os.path.relpath(root, base_dir).count(os.sep)
-                    if depth > max_depth:
-                        dirs[:] = []
-                        continue
-                    dirs[:] = [d for d in dirs if d not in (".git", ".venv", "__pycache__")]
-                    for name in candidates:
-                        candidate = os.path.join(root, name)
-                        if os.path.isfile(candidate):
-                            return dedup_repeated_dir(candidate)
-                return None
-
-            def resolve_scrcpy_with_server(scrcpy_path):
-                """Prefer scrcpy that has scrcpy-server in the same directory."""
-                if not scrcpy_path:
-                    return None
-                server_dir = os.path.dirname(scrcpy_path)
-                for name in ("scrcpy-server", "scrcpy-server.jar"):
-                    server_path = os.path.join(server_dir, name)
-                    if os.path.isfile(server_path):
-                        os.environ["SCRCPY_SERVER_PATH"] = server_path
-                        return scrcpy_path
-                return None
-
-            def find_scrcpy_in_path():
-                """Yield scrcpy candidates found in PATH, in order."""
-                path_env = os.environ.get("PATH", "")
-                if not path_env:
-                    return []
-                candidates = []
-                exe_name = "scrcpy.exe" if os.name == "nt" else "scrcpy"
-                for entry in path_env.split(os.pathsep):
-                    entry = entry.strip('"')
-                    if not entry:
-                        continue
-                    candidate = os.path.join(entry, exe_name)
-                    if os.path.isfile(candidate):
-                        candidates.append(candidate)
-                return candidates
-
-            # 检查是否是PyInstaller打包环境
-            if getattr(sys, 'frozen', False):
-                # 在PyInstaller环境中，使用_MEIPASS查找打包的资源目录
-                base_path = getattr(sys, '_MEIPASS', os.path.dirname(os.path.abspath(__file__)))
-                bundled_scrcpy = find_local_scrcpy(base_path)
-                if bundled_scrcpy:
-                    resolved = resolve_scrcpy_with_server(bundled_scrcpy)
-                    if resolved:
-                        self.log(f"使用打包的scrcpy: {resolved}")
-                        return resolved
-            
-            # 首选运行目录，其次脚本目录（不固定文件夹名）
-            search_roots = []
-            cwd = os.getcwd()
-            if os.path.isdir(cwd):
-                search_roots.append(cwd)
-            script_dir = os.path.dirname(os.path.abspath(__file__))
-            if os.path.isdir(script_dir) and script_dir not in search_roots:
-                search_roots.append(script_dir)
-
-            for root in search_roots:
-                local_scrcpy = find_local_scrcpy(root)
-                if local_scrcpy:
-                    resolved = resolve_scrcpy_with_server(local_scrcpy)
-                    if resolved:
-                        self.log(f"使用本地scrcpy: {resolved}")
-                        return resolved
-                
-            # 如果本地没有，才尝试通过环境变量PATH查找
-            if os.name == 'nt':
-                path_candidates = find_scrcpy_in_path()
-                if path_candidates:
-                    fallback = None
-                    for scrcpy_candidate in path_candidates:
-                        if not fallback:
-                            fallback = scrcpy_candidate
-                        resolved = resolve_scrcpy_with_server(scrcpy_candidate)
-                        if resolved:
-                            return resolved
-                    if fallback:
-                        self.log(f"警告: {fallback} 同目录下未找到 scrcpy-server，仍将使用该路径")
-                        return fallback
-
-                startupinfo = subprocess.STARTUPINFO()
-                startupinfo.dwFlags |= subprocess.STARTF_USESHOWWINDOW
-                creationflags = subprocess.CREATE_NO_WINDOW
-                # 在Windows下尝试查找
-                result = subprocess.run(
-                    ['where', 'scrcpy'], 
-                    capture_output=True, 
-                    text=True, 
-                    check=False,
-                    startupinfo=startupinfo,
-                    creationflags=creationflags
-                )
-                
-                if result.returncode == 0 and result.stdout:
-                    fallback = None
-                    for line in result.stdout.splitlines():
-                        scrcpy_candidate = line.strip()
-                        if scrcpy_candidate:
-                            if not fallback:
-                                fallback = scrcpy_candidate
-                            resolved = resolve_scrcpy_with_server(scrcpy_candidate)
-                            if resolved:
-                                return resolved
-                    if fallback:
-                        self.log(f"警告: {fallback} 同目录下未找到 scrcpy-server，仍将使用该路径")
-                        return fallback
-            else:
-                # 在Linux和macOS下查找
-                path_candidates = find_scrcpy_in_path()
-                if path_candidates:
-                    fallback = None
-                    for scrcpy_candidate in path_candidates:
-                        if not fallback:
-                            fallback = scrcpy_candidate
-                        resolved = resolve_scrcpy_with_server(scrcpy_candidate)
-                        if resolved:
-                            return resolved
-                    if fallback:
-                        self.log(f"警告: {fallback} 同目录下未找到 scrcpy-server，仍将使用该路径")
-                        return fallback
-
-                result = subprocess.run(['which', 'scrcpy'], 
-                                       capture_output=True, 
-                                       text=True, 
-                                       check=False)
-                
-                if result.returncode == 0 and result.stdout.strip():
-                    candidate = result.stdout.strip()
-                    resolved = resolve_scrcpy_with_server(candidate)
-                    if resolved:
-                        return resolved
-                    return candidate
-            
-            # 如果没有找到，尝试一些常见的路径
-            common_paths = [
-                os.path.join(os.environ.get('LOCALAPPDATA', ''), 'scrcpy', 'scrcpy.exe'),
-                os.path.join(os.environ.get('ProgramFiles', ''), 'scrcpy', 'scrcpy.exe'),
-                os.path.join(os.environ.get('ProgramFiles(x86)', ''), 'scrcpy', 'scrcpy.exe'),
-                '/usr/bin/scrcpy',
-                '/usr/local/bin/scrcpy'
-            ]
-        
-            fallback = None
-            for path in common_paths:
-                if os.path.isfile(path):
-                    if not fallback:
-                        fallback = path
-                    resolved = resolve_scrcpy_with_server(path)
-                    if resolved:
-                        return resolved
-            if fallback:
-                self.log(f"警告: {fallback} 同目录下未找到 scrcpy-server，仍将使用该路径")
-                return fallback
-            
-            # 如果仍然没有找到，返回默认的'scrcpy'命令
-            return 'scrcpy'
+            details = resolve_scrcpy_path(
+                preferred_path=(self.runtime_path_overrides or {}).get("scrcpy_path"),
+                preferred_server_path=(self.runtime_path_overrides or {}).get("scrcpy_server_path"),
+                return_details=True,
+            )
+            self.scrcpy_resolution = details or {}
+            return (details or {}).get("path", "scrcpy")
         except Exception as e:
             self.log(f"查找scrcpy路径出错: {e}")
             return 'scrcpy'
+
+    def _refresh_runtime_dependencies(self, *, save_config=True, announce=True):
+        """按当前配置重新解析 adb/scrcpy 依赖并刷新控制器。"""
+        self.adb_path = self.find_adb_path()
+        self.scrcpy_path = self.find_scrcpy_path()
+        self.controller = ScrcpyController(adb_path=self.adb_path, scrcpy_path=self.scrcpy_path)
+        self.device_service = DeviceService(self.controller)
+        self.wifi_service = WifiConnectionService(self, self.adb_path, self.process_manager)
+        self.screenshot_service = ScreenshotService(self, self.controller)
+        if save_config:
+            self.save_config()
+        if announce:
+            self._log_runtime_dependency_status(show_dialog=False)
+
+    def _log_runtime_dependency_status(self, *, show_dialog=False):
+        """输出当前依赖解析结果。"""
+        health = self.collect_environment_health()
+        lines = [
+            f"ADB: {health.get('adb_path')} (来源: {health.get('adb_source')})",
+            f"scrcpy: {health.get('scrcpy_path')} (来源: {health.get('scrcpy_source')})",
+            f"scrcpy-server: {health.get('scrcpy_server_path') or '未设置'} (来源: {health.get('scrcpy_server_source')})",
+        ]
+        self.log("环境依赖解析 -> " + " | ".join(lines))
+        if show_dialog:
+            self.show_info_message("环境依赖", "\n".join(lines), show_dialog=True, duration=2500)
+
+    def _select_runtime_binary(self, key, title, filters):
+        """选择运行时依赖文件并立即生效。"""
+        current = (self.runtime_path_overrides or {}).get(key, "")
+        filename, _ = QFileDialog.getOpenFileName(self, title, current, filters)
+        if not filename:
+            return
+        self.runtime_path_overrides[key] = filename
+        self._refresh_runtime_dependencies(save_config=True, announce=True)
+
+    def _select_adb_path(self):
+        self._select_runtime_binary("adb_path", "选择 ADB 可执行文件", "ADB 可执行文件 (adb.exe adb)")
+
+    def _select_scrcpy_path(self):
+        self._select_runtime_binary("scrcpy_path", "选择 scrcpy 可执行文件", "scrcpy 可执行文件 (scrcpy.exe scrcpy)")
+
+    def _select_scrcpy_server_path(self):
+        self._select_runtime_binary("scrcpy_server_path", "选择 scrcpy-server 文件", "scrcpy-server 文件 (scrcpy-server* *.jar)")
+
+    def _reset_runtime_paths(self):
+        self.runtime_path_overrides = {"adb_path": "", "scrcpy_path": "", "scrcpy_server_path": ""}
+        self._refresh_runtime_dependencies(save_config=True, announce=True)
         
     def check_adb_available(self):
         """检查adb是否可用"""
-        try:
-            kwargs = {}
-            if os.name == 'nt':  # Windows
-                kwargs['creationflags'] = subprocess.CREATE_NO_WINDOW
-            subprocess.run([self.adb_path, "version"], capture_output=True, **kwargs)
-            return True
-        except:
-            return False
+        return check_command_available(self.adb_path, "version")
             
     def check_scrcpy_available(self):
         """检查scrcpy是否可用"""
-        try:
-            kwargs = {}
-            if os.name == 'nt':  # Windows
-                kwargs['creationflags'] = subprocess.CREATE_NO_WINDOW
-            subprocess.run([self.scrcpy_path, "--version"], capture_output=True, **kwargs)
-            return True
-        except:
-            return False
+        return check_command_available(self.scrcpy_path, "--version")
+
+    def _create_device_group(self, scaled, compact_layout, layout_spacing):
+        """创建设备连接区域。"""
+        device_group = QGroupBox("设备连接")
+        device_layout = QHBoxLayout(device_group)
+        compact_layout(device_layout)
+
+        device_label = QLabel("设备:")
+        self.device_combo = QComboBox()
+        self.device_combo.setMinimumWidth(scaled(220, 160))
+        self.device_combo.currentIndexChanged.connect(self._on_device_selection_changed)
+
+        self.device_status_hint = QLabel("当前未选择设备")
+        self.device_status_hint.setStyleSheet("color: #6e6a64;")
+        self.device_status_hint.hide()
+
+        refresh_btn = QPushButton("刷新设备")
+        refresh_btn.clicked.connect(lambda: self.check_devices(True))
+
+        device_layout.addWidget(device_label)
+        device_layout.addWidget(self.device_combo, 1)
+        device_layout.addWidget(refresh_btn)
+
+        self.usb_btn = QPushButton("一键USB连接")
+        self.usb_btn.clicked.connect(self.start_scrcpy)
+        self.usb_btn.setObjectName("usb_btn")
+
+        self.wifi_btn = QPushButton("一键WIFI连接")
+        self.wifi_btn.clicked.connect(self.connect_wireless)
+        self.wifi_btn.setObjectName("wifi_btn")
+
+        self.auto_refresh_cb = QCheckBox("自动刷新")
+        self.auto_refresh_cb.setChecked(False)
+        self.auto_refresh_cb.stateChanged.connect(self.toggle_auto_refresh)
+
+        connection_layout = QHBoxLayout()
+        compact_layout(connection_layout, margin_value=0, spacing_value=layout_spacing)
+        connection_layout.addWidget(self.usb_btn)
+        connection_layout.addWidget(self.wifi_btn)
+        connection_layout.addStretch(1)
+        connection_layout.addWidget(self.auto_refresh_cb)
+
+        device_layout.addLayout(connection_layout)
+        return device_group
+
+    def _create_mirror_group(self, scaled, compact_layout):
+        """创建镜像参数区域。"""
+        mirror_group = QGroupBox("镜像模式")
+        mirror_layout = QGridLayout(mirror_group)
+        compact_layout(mirror_layout)
+
+        preset_label = QLabel("参数预设:")
+        self.preset_combo = QComboBox()
+        self.preset_combo.addItems(["自定义", *self.command_service.PRESETS.keys()])
+        self.preset_combo.setMaximumWidth(scaled(140, 100))
+        self.preset_combo.setToolTip("可快速应用一组常用投屏参数")
+
+        preset_apply_btn = QPushButton("应用预设")
+        preset_apply_btn.clicked.connect(self._apply_selected_preset)
+
+        bitrate_label = QLabel("比特率:")
+        self.bitrate_input = QLineEdit("6")
+        self.bitrate_input.setMaximumWidth(scaled(72, 56))
+        self.bitrate_input.textChanged.connect(self._set_preset_custom_if_needed)
+        bitrate_unit = QLabel("Mbps")
+
+        maxfps_label = QLabel("帧率:")
+        self.maxfps_input = QLineEdit()
+        self.maxfps_input.setPlaceholderText("默认")
+        self.maxfps_input.setMaximumWidth(scaled(72, 56))
+        self.maxfps_input.textChanged.connect(self._set_preset_custom_if_needed)
+        fps_unit = QLabel("FPS")
+
+        maxsize_label = QLabel("最大尺寸:")
+        self.maxsize_input = QLineEdit("1080")
+        self.maxsize_input.setMaximumWidth(scaled(72, 56))
+        self.maxsize_input.textChanged.connect(self._set_preset_custom_if_needed)
+
+        format_label = QLabel("录制格式:")
+        self.format_combo = QComboBox()
+        self.format_combo.addItems(["mp4", "mkv"])
+        self.format_combo.setMaximumWidth(scaled(88, 70))
+        self.format_combo.currentTextChanged.connect(self._set_preset_custom_if_needed)
+
+        rotation_label = QLabel("限制方向:")
+        self.rotation_combo = QComboBox()
+        self.rotation_combo.addItems(["不限制", "横屏", "竖屏"])
+        self.rotation_combo.setMaximumWidth(scaled(88, 70))
+        self.rotation_combo.currentTextChanged.connect(self._set_preset_custom_if_needed)
+
+        codec_label = QLabel("编码器:")
+        self.codec_combo = QComboBox()
+        self.codec_combo.addItems(["默认", "h264", "h265", "av1"])
+        self.codec_combo.setMaximumWidth(scaled(100, 80))
+        self.codec_combo.currentTextChanged.connect(self._set_preset_custom_if_needed)
+
+        displayid_label = QLabel("显示ID:")
+        self.displayid_input = QLineEdit()
+        self.displayid_input.setPlaceholderText("默认")
+        self.displayid_input.setMaximumWidth(scaled(72, 56))
+        self.displayid_input.textChanged.connect(self._set_preset_custom_if_needed)
+
+        crop_label = QLabel("裁剪:")
+        self.crop_input = QLineEdit()
+        self.crop_input.setPlaceholderText("宽:高:X:Y")
+        self.crop_input.setToolTip("裁剪格式：宽:高:X:Y")
+        self.crop_input.textChanged.connect(self._set_preset_custom_if_needed)
+        self.crop_input.textChanged.connect(self._update_crop_validation_state)
+
+        record_label = QLabel("录制存储路径:")
+        self.record_path = QLineEdit()
+        self.record_path.setPlaceholderText("默认不录制")
+        self.record_path.textChanged.connect(self._set_preset_custom_if_needed)
+
+        browse_btn = QPushButton("选择路径")
+        browse_btn.clicked.connect(self.select_record_path)
+
+        mirror_layout.addWidget(preset_label, 0, 0)
+        mirror_layout.addWidget(self.preset_combo, 0, 1)
+        mirror_layout.addWidget(preset_apply_btn, 0, 2)
+        mirror_layout.addWidget(codec_label, 0, 3)
+        mirror_layout.addWidget(self.codec_combo, 0, 4)
+
+        mirror_layout.addWidget(bitrate_label, 1, 0)
+        mirror_layout.addWidget(self.bitrate_input, 1, 1)
+        mirror_layout.addWidget(bitrate_unit, 1, 2)
+        mirror_layout.addWidget(maxsize_label, 1, 3)
+        mirror_layout.addWidget(self.maxsize_input, 1, 4)
+        mirror_layout.addWidget(maxfps_label, 1, 5)
+        mirror_layout.addWidget(self.maxfps_input, 1, 6)
+        mirror_layout.addWidget(fps_unit, 1, 7)
+
+        mirror_layout.addWidget(format_label, 2, 0)
+        mirror_layout.addWidget(self.format_combo, 2, 1)
+        mirror_layout.addWidget(rotation_label, 2, 3)
+        mirror_layout.addWidget(self.rotation_combo, 2, 4)
+        mirror_layout.addWidget(displayid_label, 2, 5)
+        mirror_layout.addWidget(self.displayid_input, 2, 6)
+
+        mirror_layout.addWidget(crop_label, 3, 0)
+        mirror_layout.addWidget(self.crop_input, 3, 1, 1, 6)
+
+        mirror_layout.addWidget(record_label, 4, 0)
+        mirror_layout.addWidget(self.record_path, 4, 1, 1, 5)
+        mirror_layout.addWidget(browse_btn, 4, 6, 1, 2)
+        return mirror_group
+
+    def _create_options_group(self, scaled, compact_layout):
+        """创建功能选项区域。"""
+        options_group = QGroupBox("功能选项")
+        options_layout = QGridLayout(options_group)
+        compact_layout(options_layout)
+
+        self.record_cb = QCheckBox("录制屏幕")
+        self.fullscreen_cb = QCheckBox("全屏显示")
+        self.always_top_cb = QCheckBox("窗口置顶")
+        self.show_touches_cb = QCheckBox("显示触摸")
+        self.no_control_cb = QCheckBox("无交互")
+        self.disable_clipboard_cb = QCheckBox("禁用剪贴板")
+        self.turn_screen_off_cb = QCheckBox("投屏时熄屏")
+        self.stay_awake_cb = QCheckBox("保持唤醒")
+        self.record_only_cb = QCheckBox("纯录制模式")
+        self.record_only_cb.setToolTip("启用后将自动打开录屏，并以无窗口方式运行")
+        self.record_only_cb.stateChanged.connect(self._handle_record_only_changed)
+
+        for checkbox in [
+            self.record_cb,
+            self.fullscreen_cb,
+            self.always_top_cb,
+            self.show_touches_cb,
+            self.no_control_cb,
+            self.disable_clipboard_cb,
+            self.turn_screen_off_cb,
+            self.stay_awake_cb,
+        ]:
+            checkbox.stateChanged.connect(self._set_preset_custom_if_needed)
+
+        self.always_top_cb.stateChanged.connect(self._handle_always_on_top_changed)
+
+        options_layout.addWidget(self.record_cb, 0, 0)
+        options_layout.addWidget(self.fullscreen_cb, 0, 1)
+        options_layout.addWidget(self.always_top_cb, 0, 2)
+        options_layout.addWidget(self.show_touches_cb, 1, 0)
+        options_layout.addWidget(self.no_control_cb, 1, 1)
+        options_layout.addWidget(self.disable_clipboard_cb, 1, 2)
+        options_layout.addWidget(self.turn_screen_off_cb, 2, 0)
+        options_layout.addWidget(self.stay_awake_cb, 2, 1)
+        options_layout.addWidget(self.record_only_cb, 2, 2)
+        return options_group
+
+    def _create_log_group(self):
+        """创建日志区域。"""
+        log_group = QGroupBox("操作日志")
+        log_layout = QVBoxLayout(log_group)
+        log_layout.setContentsMargins(8, 8, 8, 8)
+        log_layout.setSpacing(4)
+
+        toolbar_layout = QHBoxLayout()
+        toolbar_layout.setContentsMargins(0, 0, 0, 0)
+        toolbar_layout.setSpacing(4)
+        toolbar_layout.addWidget(QLabel("日志过滤:"))
+
+        self.log_filter_combo = QComboBox()
+        self.log_filter_combo.addItems(["全部", "警告及错误", "仅错误"])
+        self.log_filter_combo.currentTextChanged.connect(self._refresh_log_view)
+        self.log_filter_combo.setMaximumWidth(120)
+        toolbar_layout.addWidget(self.log_filter_combo)
+        toolbar_layout.addStretch(1)
+
+        copy_log_btn = QPushButton("复制日志")
+        copy_log_btn.clicked.connect(self.copy_log)
+        copy_log_btn.setMaximumWidth(110)
+
+        export_log_btn = QPushButton("导出日志")
+        export_log_btn.clicked.connect(self.export_log)
+        export_log_btn.setMaximumWidth(110)
+
+        toolbar_layout.addWidget(copy_log_btn)
+        toolbar_layout.addWidget(export_log_btn)
+
+        self.log_text = QTextEdit()
+        self.log_text.setReadOnly(True)
+        self.log_text.setMinimumHeight(170)
+
+        log_layout.addLayout(toolbar_layout)
+        log_layout.addWidget(self.log_text, 1)
+        return log_group
+
+    def _create_bottom_action_bar(self):
+        """创建底部主操作按钮区域。"""
+        action_widget = QWidget()
+        action_layout = QHBoxLayout(action_widget)
+        action_layout.setContentsMargins(0, 0, 0, 0)
+        action_layout.setSpacing(8)
+
+        clear_log_btn = QPushButton("清空日志")
+        clear_log_btn.clicked.connect(self.clear_log)
+        clear_log_btn.setObjectName("clear_log_btn")
+
+        stop_btn = QPushButton("停止投屏")
+        stop_btn.clicked.connect(self.stop_scrcpy)
+        stop_btn.setObjectName("stop_btn")
+
+        screenshot_btn = QPushButton("截图")
+        screenshot_btn.clicked.connect(self.take_screenshot)
+        screenshot_btn.setObjectName("screenshot_btn")
+
+        action_layout.addWidget(clear_log_btn)
+        action_layout.addWidget(stop_btn)
+        action_layout.addWidget(screenshot_btn)
+        return action_widget
         
     def initUI(self):
         # 设置窗口
         self.setWindowTitle('Scrcpy GUI - 安卓屏幕控制')
-        # 根据屏幕可用尺寸智能自适应，略微再降低高度
+        # 根据屏幕可用尺寸智能自适应，避免默认窗口过高
         screen = QApplication.primaryScreen()
         avail = screen.availableGeometry() if screen else None
-        base_w, base_h = 760, 540
+        base_w, base_h = 800, 620
         if avail:
             w = avail.width()
             h = avail.height()
-            # 大屏减小比例，小屏保持适中
+            # 高度再回调一档，保持紧凑但不挤压日志与底栏
             frac_w = 0.46 if w < 1920 else 0.38
-            frac_h = 0.48 if h < 1080 else 0.40
+            frac_h = 0.44 if h < 1080 else 0.39
             base_w = max(640, min(int(w * frac_w), 900))
-            base_h = max(480, min(int(h * frac_h), 680))
+            base_h = max(580, min(int(h * frac_h), 660))
         self.resize(base_w, base_h)
-        self.setMinimumSize(620, 460)
+        self.setMinimumSize(700, 520)
         
         # 创建菜单栏
         self.create_menus()
@@ -1133,181 +1597,17 @@ class ScrcpyUI(QMainWindow):
             layout.setSpacing(s)
         main_layout.setContentsMargins(margin, margin, margin, margin)
         main_layout.setSpacing(spacing)
-        
-        # 创建设备管理区域
-        device_group = QGroupBox("设备连接")
-        device_layout = QHBoxLayout(device_group)
-        compact_layout(device_layout)
-        
-        # 设备选择区域
-        device_label = QLabel("设备:")
-        self.device_combo = QComboBox()
-        self.device_combo.setMinimumWidth(scaled(220, 160))
-        
-        refresh_btn = QPushButton("刷新设备")
-        refresh_btn.clicked.connect(lambda: self.check_devices(True))  # 显式传递show_message=True
-        
-        device_layout.addWidget(device_label)
-        device_layout.addWidget(self.device_combo, 1)
-        device_layout.addWidget(refresh_btn)
-        
-        # 添加连接类型选项
-        self.usb_btn = QPushButton("一键USB连接")
-        self.usb_btn.clicked.connect(self.start_scrcpy)
-        self.usb_btn.setObjectName("usb_btn")
-        
-        self.wifi_btn = QPushButton("一键WIFI连接")
-        self.wifi_btn.clicked.connect(self.connect_wireless)
-        self.wifi_btn.setObjectName("wifi_btn")
-        
-        self.connect_all_btn = QPushButton("连接所有设备")
-        self.connect_all_btn.clicked.connect(self.connect_all_devices)
-        self.connect_all_btn.setObjectName("connect_all_btn")
-        
-        # 自动刷新选项
-        self.auto_refresh_cb = QCheckBox("自动刷新")
-        self.auto_refresh_cb.setChecked(False)  # 默认不自动刷新
-        self.auto_refresh_cb.stateChanged.connect(self.toggle_auto_refresh)
-        
-        connection_layout = QHBoxLayout()
-        compact_layout(connection_layout, margin_value=0, spacing_value=layout_spacing)
-        connection_layout.addWidget(self.usb_btn)
-        connection_layout.addWidget(self.wifi_btn)
-        connection_layout.addWidget(self.connect_all_btn)
-        connection_layout.addStretch(1)
-        connection_layout.addWidget(self.auto_refresh_cb)
-        
-        # 添加连接布局到设备组
-        device_layout.addLayout(connection_layout)
-        
-        # 添加镜像模式选项组
-        mirror_group = QGroupBox("镜像模式")
-        mirror_layout = QGridLayout(mirror_group)
-        compact_layout(mirror_layout)
-        
-        # 比特率
-        bitrate_label = QLabel("比特率:")
-        self.bitrate_input = QLineEdit("6")
-        self.bitrate_input.setMaximumWidth(scaled(72, 56))
-        bitrate_unit = QLabel("Mbps")
-        
-        # 最大尺寸
-        maxsize_label = QLabel("最大尺寸:")
-        self.maxsize_input = QLineEdit("1080")
-        self.maxsize_input.setMaximumWidth(scaled(72, 56))
-        
-        # 录制格式
-        format_label = QLabel("录制格式:")
-        self.format_combo = QComboBox()
-        self.format_combo.addItems(["mp4", "mkv"])
-        self.format_combo.setMaximumWidth(scaled(88, 70))
-        
-        # 限制方向
-        rotation_label = QLabel("限制方向:")
-        self.rotation_combo = QComboBox()
-        self.rotation_combo.addItems(["不限制", "横屏", "竖屏"])
-        self.rotation_combo.setMaximumWidth(scaled(88, 70))
-        
-        # 录制存储路径
-        record_label = QLabel("录制存储路径:")
-        self.record_path = QLineEdit()
-        self.record_path.setPlaceholderText("默认不录制")
-        
-        browse_btn = QPushButton("选择路径")
-        browse_btn.clicked.connect(self.select_record_path)
-        
-        # 添加控件到布局
-        mirror_layout.addWidget(bitrate_label, 0, 0)
-        mirror_layout.addWidget(self.bitrate_input, 0, 1)
-        mirror_layout.addWidget(bitrate_unit, 0, 2)
-        mirror_layout.addWidget(maxsize_label, 0, 3)
-        mirror_layout.addWidget(self.maxsize_input, 0, 4)
-        mirror_layout.addWidget(format_label, 1, 0)
-        mirror_layout.addWidget(self.format_combo, 1, 1)
-        mirror_layout.addWidget(rotation_label, 1, 3)
-        mirror_layout.addWidget(self.rotation_combo, 1, 4)
-        mirror_layout.addWidget(record_label, 2, 0)
-        mirror_layout.addWidget(self.record_path, 2, 1, 1, 4)
-        mirror_layout.addWidget(browse_btn, 2, 5)
-        
-        # 添加功能选项组
-        options_group = QGroupBox("功能选项")
-        options_layout = QGridLayout(options_group)
-        compact_layout(options_layout)
-        
-        self.record_cb = QCheckBox("录制屏幕")
-        self.fullscreen_cb = QCheckBox("全屏显示")
-        self.always_top_cb = QCheckBox("窗口置顶")
-        self.show_touches_cb = QCheckBox("显示触摸")
-        self.no_control_cb = QCheckBox("无交互")
-        self.disable_clipboard_cb = QCheckBox("禁用剪贴板")
-        
-        # 添加同步群控选项
-        self.sync_control_cb = QCheckBox("同步群控（维护中）")
-        self.sync_control_cb.setToolTip("该功能暂未完成，当前版本默认禁用")
-        self.sync_control_cb.setEnabled(False)
-        self.sync_control_cb.stateChanged.connect(self.toggle_sync_control)
-        
-        self.sync_control_device_combo = QComboBox()
-        self.sync_control_device_combo.setEnabled(False)
-        self.sync_control_device_combo.setToolTip("选择主控设备（功能维护中）")
-        self.sync_control_device_combo.setMinimumWidth(scaled(140, 120))
-        
-        # 创建群控设置按钮
-        self.sync_control_settings_btn = QPushButton("群控设置")
-        self.sync_control_settings_btn.clicked.connect(self.show_sync_control_settings)
-        self.sync_control_settings_btn.setEnabled(False)
-        
-        options_layout.addWidget(self.record_cb, 0, 0)
-        options_layout.addWidget(self.fullscreen_cb, 0, 1)
-        options_layout.addWidget(self.always_top_cb, 0, 2)
-        options_layout.addWidget(self.show_touches_cb, 1, 0)
-        options_layout.addWidget(self.no_control_cb, 1, 1)
-        options_layout.addWidget(self.disable_clipboard_cb, 1, 2)
-        
-        # 添加同步群控选项到新的一行
-        sync_layout = QHBoxLayout()
-        sync_layout.addWidget(self.sync_control_cb)
-        sync_layout.addWidget(QLabel("主控设备:"))
-        sync_layout.addWidget(self.sync_control_device_combo)
-        sync_layout.addWidget(self.sync_control_settings_btn)
-        sync_layout.addStretch(1)
-        
-        options_layout.addLayout(sync_layout, 2, 0, 1, 3)
-        
-        # 日志区域
-        log_group = QGroupBox("操作日志")
-        log_layout = QVBoxLayout(log_group)
-        
-        self.log_text = QTextEdit()
-        self.log_text.setReadOnly(True)
-        
-        log_btns_layout = QHBoxLayout()
-        
-        clear_log_btn = QPushButton("清空日志")
-        clear_log_btn.clicked.connect(self.clear_log)
-        clear_log_btn.setObjectName("clear_log_btn")
-        
-        stop_btn = QPushButton("停止投屏")
-        stop_btn.clicked.connect(self.stop_scrcpy)
-        stop_btn.setObjectName("stop_btn")
-        
-        screenshot_btn = QPushButton("截图")
-        screenshot_btn.clicked.connect(self.take_screenshot)
-        screenshot_btn.setObjectName("screenshot_btn")
-        
-        log_btns_layout.addWidget(clear_log_btn)
-        log_btns_layout.addWidget(stop_btn)
-        log_btns_layout.addWidget(screenshot_btn)
-        
-        log_layout.addWidget(self.log_text)
-        log_layout.addLayout(log_btns_layout)
-        
-        # 添加各个区域到主布局 - 不再包含导航按钮组
+        device_group = self._create_device_group(scaled, compact_layout, layout_spacing)
+        mirror_group = self._create_mirror_group(scaled, compact_layout)
+        options_group = self._create_options_group(scaled, compact_layout)
+        log_group = self._create_log_group()
+        bottom_action_bar = self._create_bottom_action_bar()
+
         main_layout.addWidget(device_group)
         main_layout.addWidget(mirror_group)
         main_layout.addWidget(options_group)
         main_layout.addWidget(log_group, 1)
+        main_layout.addWidget(bottom_action_bar)
         
         # 根据自动刷新复选框的初始状态设置定时器
         self.toggle_auto_refresh(Qt.Unchecked)  # 默认不自动刷新
@@ -1354,6 +1654,11 @@ class ScrcpyUI(QMainWindow):
         disconnect_action = QAction("断开连接", self)
         disconnect_action.triggered.connect(self.stop_scrcpy)
         device_menu.addAction(disconnect_action)
+
+        self.disconnect_wifi_action = QAction("断开WiFi连接", self)
+        self.disconnect_wifi_action.triggered.connect(self.disconnect_wireless)
+        device_menu.addAction(self.disconnect_wifi_action)
+
         
         # 工具菜单
         tools_menu = menu_bar.addMenu("工具")
@@ -1361,20 +1666,66 @@ class ScrcpyUI(QMainWindow):
         screenshot_action = QAction("截图", self)
         screenshot_action.triggered.connect(self.take_screenshot)
         tools_menu.addAction(screenshot_action)
+
+        quick_screenshot_action = QAction("快速截图到默认目录", self)
+        quick_screenshot_action.triggered.connect(self.screenshot_service.quick_save_screenshot)
+        tools_menu.addAction(quick_screenshot_action)
+
+        self.quick_screenshot_mode_action = QAction("启用截图快速保存模式", self)
+        self.quick_screenshot_mode_action.setCheckable(True)
+        tools_menu.addAction(self.quick_screenshot_mode_action)
+
+        self.screenshot_date_archive_action = QAction("截图按日期归档", self)
+        self.screenshot_date_archive_action.setCheckable(True)
+        tools_menu.addAction(self.screenshot_date_archive_action)
+
+        set_screenshot_dir_action = QAction("设置截图默认目录", self)
+        set_screenshot_dir_action.triggered.connect(self.select_screenshot_dir)
+        tools_menu.addAction(set_screenshot_dir_action)
+
+        tools_menu.addSeparator()
+        set_adb_path_action = QAction("设置 ADB 路径", self)
+        set_adb_path_action.triggered.connect(self._select_adb_path)
+        tools_menu.addAction(set_adb_path_action)
+
+        set_scrcpy_path_action = QAction("设置 scrcpy 路径", self)
+        set_scrcpy_path_action.triggered.connect(self._select_scrcpy_path)
+        tools_menu.addAction(set_scrcpy_path_action)
+
+        set_scrcpy_server_action = QAction("设置 scrcpy-server 路径", self)
+        set_scrcpy_server_action.triggered.connect(self._select_scrcpy_server_path)
+        tools_menu.addAction(set_scrcpy_server_action)
+
+        reset_runtime_paths_action = QAction("恢复自动检测依赖路径", self)
+        reset_runtime_paths_action.triggered.connect(self._reset_runtime_paths)
+        tools_menu.addAction(reset_runtime_paths_action)
+
+        tools_menu.addSeparator()
+        self.open_record_dir_action = QAction("录屏完成后打开目录", self)
+        self.open_record_dir_action.setCheckable(True)
+        tools_menu.addAction(self.open_record_dir_action)
+
+        self.open_record_file_action = QAction("录屏完成后打开文件", self)
+        self.open_record_file_action.setCheckable(True)
+        tools_menu.addAction(self.open_record_file_action)
+
         
         # 添加应用管理器入口到工具菜单
         app_manager_action = QAction("应用管理器", self)
         app_manager_action.triggered.connect(self.show_app_manager)
         tools_menu.addAction(app_manager_action)
         
-        # 添加群控功能到工具菜单
-        tools_menu.addSeparator()
-        sync_control_action = QAction("同步群控设置", self)
-        sync_control_action.triggered.connect(self.show_sync_control_settings)
-        tools_menu.addAction(sync_control_action)
-        
         # 帮助菜单
         help_menu = menu_bar.addMenu("帮助")
+
+        health_action = QAction("环境自检", self)
+        health_action.triggered.connect(self.show_startup_health_panel)
+        help_menu.addAction(health_action)
+
+        diagnose_action = QAction("一键诊断", self)
+        diagnose_action.triggered.connect(self.run_one_click_diagnosis)
+        help_menu.addAction(diagnose_action)
+        help_menu.addSeparator()
         
         about_action = QAction("关于", self)
         about_action.triggered.connect(self.show_about)
@@ -1388,10 +1739,26 @@ class ScrcpyUI(QMainWindow):
         )
         if filename:
             self.record_path.setText(filename)
+
+    def select_screenshot_dir(self):
+        """选择默认截图保存目录。"""
+        directory = QFileDialog.getExistingDirectory(self, "选择截图默认目录", self.screenshot_dir or "")
+        if directory:
+            self.screenshot_dir = directory
+            self.show_info_message("截图目录", f"默认截图目录已设置为：{directory}", show_dialog=False, duration=2500)
             
     def clear_log(self):
         """清空日志文本框"""
+        self.log_entries.clear()
         self.log_text.clear()
+        self.statusBar().showMessage("日志已清空", 2000)
+
+    def create_control_bar(self, device_id, window_title):
+        """兼容旧版本调用，当前版本不再创建额外控制栏。"""
+        if device_id not in self.control_bars:
+            self.control_bars[device_id] = None
+            self.log(f"设备 {device_id} 的独立控制栏功能当前已禁用，已跳过创建")
+        return True
             
     def check_devices(self, show_message=False):
         """检查连接的设备并更新设备列表
@@ -1400,37 +1767,38 @@ class ScrcpyUI(QMainWindow):
             show_message: 是否显示设备检测消息，默认为False
         """
         try:
-            devices = self.controller.get_devices()
-            
-            # 清空当前列表
-            self.device_combo.clear()
-            self.sync_control_device_combo.clear()  # 清空群控设备列表
-            
-            for device_id, model in devices:
-                self.device_combo.addItem(f"{model} ({device_id})", device_id)
-                self.sync_control_device_combo.addItem(f"{model} ({device_id})", device_id)
+            previous_device = self.device_combo.currentData() or self.pending_selected_device or self.last_connected_device
+            devices, selected_device = self.device_service.sync_device_widgets(
+                self.device_combo,
+                preferred_device_id=previous_device,
+                active_device_ids=self._get_running_device_ids(),
+                last_connected_device_id=self.last_connected_device,
+            )
+            self.device_status_map = {item["device_id"]: item for item in devices}
+            self._apply_device_item_styles()
             
             # 更新连接按钮状态
-            has_devices = self.device_combo.count() > 0
-            self.usb_btn.setEnabled(has_devices)
-            self.wifi_btn.setEnabled(has_devices)
-            self.connect_all_btn.setEnabled(has_devices and len(devices) > 1)
-            
-            # 更新群控相关控件状态
-            self.sync_control_device_combo.setEnabled(has_devices and self.sync_control_cb.isChecked())
-            self.sync_control_settings_btn.setEnabled(has_devices and self.sync_control_cb.isChecked())
+            available_devices = [item for item in devices if item.get("status") == "device"]
+            has_devices = len(available_devices) > 0
+            if hasattr(self, 'disconnect_wifi_action'):
+                has_wifi_devices = any(item.get("transport") == "wifi" and item.get("status") == "device" for item in devices)
+                self.disconnect_wifi_action.setEnabled(has_wifi_devices)
+            self._update_selected_device_status_hint()
             
             # 只有当show_message为True或自动刷新开启时才显示无设备消息
             if not has_devices and (show_message or (hasattr(self, 'auto_refresh_cb') and self.auto_refresh_cb.isChecked())):
                 self.log("未检测到设备，请检查设备连接")
-            elif has_devices and not self.device_combo.currentText() and show_message:
-                self.device_combo.setCurrentIndex(0)
-                self.sync_control_device_combo.setCurrentIndex(0)
-                self.log(f"检测到 {len(devices)} 个设备")
-                
-                # 如果群控已启用但没有主控设备，则设置当前选择为主控设备
-                if self.sync_control_enabled and not self.main_device_id:
-                    self.set_main_control_device()
+            elif has_devices and show_message:
+                offline_count = sum(1 for item in devices if item.get("status") == "offline")
+                unauthorized_count = sum(1 for item in devices if item.get("status") == "unauthorized")
+                extra = []
+                if offline_count:
+                    extra.append(f"离线 {offline_count}")
+                if unauthorized_count:
+                    extra.append(f"未授权 {unauthorized_count}")
+                suffix = f"（{'，'.join(extra)}）" if extra else ""
+                self.log(f"检测到 {len(available_devices)} 个可用设备{suffix}")
+                self.pending_selected_device = selected_device
             
             return devices
         except Exception as e:
@@ -1440,15 +1808,8 @@ class ScrcpyUI(QMainWindow):
         
     def start_scrcpy(self):
         """启动scrcpy进程"""
-        # 检查是否选择了设备
-        if self.device_combo.currentIndex() < 0:
-            QMessageBox.warning(self, "警告", "请先选择一个设备")
-            return
-            
-        # 获取当前选择的设备ID
-        device_id = self.device_combo.currentData()
+        device_id = self._ensure_selected_device_available("投屏")
         if not device_id:
-            QMessageBox.warning(self, "警告", "无效的设备ID")
             return
             
         # 检查设备是否已经连接
@@ -1456,103 +1817,21 @@ class ScrcpyUI(QMainWindow):
             self.log(f"设备 {device_id} 已经在运行")
             return
             
-        # 构建命令参数
-        cmd = [self.scrcpy_path]
-        cmd.extend(['-s', device_id])
-        
-        # 添加比特率参数
-        if self.bitrate_input.text():
-            try:
-                bitrate = int(self.bitrate_input.text())
-                cmd.extend(['--video-bit-rate', f'{bitrate}M'])
-            except ValueError:
-                self.log("错误: 比特率必须是数字")
-                return
-                
-        # 添加最大尺寸参数
-        if self.maxsize_input.text():
-            try:
-                maxsize = int(self.maxsize_input.text())
-                cmd.extend(['--max-size', str(maxsize)])
-            except ValueError:
-                self.log("错误: 最大尺寸必须是数字")
-                return
-                
-        # 检查是否录制
-        if self.record_cb.isChecked():
-            # 检查是否提供了录制路径
-            if self.record_path.text():
-                record_file = self.record_path.text()
-                # 确保文件扩展名与选择的格式匹配
-                format_ext = self.format_combo.currentText()
-                if not record_file.endswith(f".{format_ext}"):
-                    record_file = f"{record_file}.{format_ext}"
-                cmd.extend(['--record', record_file])
-            else:
-                QMessageBox.warning(self, "警告", "请提供录制文件保存路径")
-                return
-                
-        # 添加其他选项
-        if self.fullscreen_cb.isChecked():
-            cmd.append('--fullscreen')
-            
-        if self.always_top_cb.isChecked():
-            cmd.append('--always-on-top')
-            
-        if self.show_touches_cb.isChecked():
-            cmd.append('--show-touches')
-            
-        if self.no_control_cb.isChecked():
-            cmd.append('--no-control')
-            
-        if self.disable_clipboard_cb.isChecked():
-            cmd.append('--no-clipboard-autosync')
-            
-        # 添加方向控制
-        rotation_option = self.rotation_combo.currentText()
-        if rotation_option == "横屏":
-            cmd.append('--lock-video-orientation=0')
-        elif rotation_option == "竖屏":
-            cmd.append('--lock-video-orientation=1')
-            
-        # 设置窗口标题为设备型号，并包含设备ID便于识别
-        device_model = self.device_combo.currentText().split(' (')[0]
-        window_title = f"{device_model} - {device_id}"
-        cmd.extend(['--window-title', window_title])
-        
-        # 添加触摸反馈效果 - 增强用户体验
-        cmd.append('--show-touches')
-        
-        # 默认关闭音频，避免设备不支持音频采集时崩溃
-        cmd.append('--no-audio')
-        
-        # 添加窗口位置参数，避免窗口出现在屏幕边缘
-        cmd.extend(['--window-x', '100'])
-        cmd.extend(['--window-y', '100'])
+        device_model = self._get_selected_device_model()
+        cmd = self._build_single_device_command(
+            device_id,
+            f"{device_model} - {device_id}",
+            window_x=100,
+            window_y=100,
+        )
+        if not cmd:
+            return
         
         # 启动进程
         self.log(f"启动设备 {device_id} 镜像: {' '.join(cmd)}")
         
         try:
-            # 创建进程
-            process = QProcess()
-            
-            # 确保进程不会被过早销毁
-            self.process_tracking.append(process)
-            
-            # 连接信号
-            process.readyReadStandardOutput.connect(lambda proc=process, dev=device_id: self.handle_process_output(proc, dev))
-            process.readyReadStandardError.connect(lambda proc=process, dev=device_id: self.handle_process_error(proc, dev))
-            
-            # 使用新方式连接finished信号，避免lambda导致的问题
-            process.finished.connect(self.create_process_finished_handler(device_id))
-            
-            # 保存进程
-            self.device_processes[device_id] = process
-            
-            # 启动进程
-            process.start(cmd[0], cmd[1:])
-            self.log(f"已启动设备 {device_id} 的 scrcpy 进程")
+            self._launch_device_process(device_id, cmd, f"已启动设备 {device_id} 的 scrcpy 进程")
             
         except Exception as e:
             self.log(f"启动 scrcpy 失败: {str(e)}")
@@ -1564,10 +1843,14 @@ class ScrcpyUI(QMainWindow):
         def handler(exit_code, exit_status):
             # 进程结束处理
             self.log(f"设备 {device_id} 的 scrcpy 进程已结束 (代码: {exit_code})")
+            record_path = self.record_outputs.pop(device_id, None)
+            if exit_code == 0 and record_path:
+                QTimer.singleShot(300, lambda path=record_path, dev=device_id: self._handle_recording_finished(dev, path))
             
             # 从进程字典中移除
             if device_id in self.device_processes:
                 del self.device_processes[device_id]
+            QTimer.singleShot(0, lambda: self.check_devices(False))
                 
         return handler
         
@@ -1581,25 +1864,7 @@ class ScrcpyUI(QMainWindow):
         device_id = self.device_combo.currentData()
         
         if device_id in self.device_processes:
-            process = self.device_processes[device_id]
-            
-            if process.state() == QProcess.Running:
-                # 要求进程终止
-                self.log(f"正在停止设备 {device_id} 的 scrcpy 进程...")
-                
-                # 终止进程
-                process.terminate()
-                
-                # 给进程一点时间自行终止
-                if not process.waitForFinished(2000):
-                    # 如果进程没有自行终止，则强制终止
-                    process.kill()
-                
-                # 从字典中移除
-                del self.device_processes[device_id]
-                
-                self.log(f"已停止设备 {device_id} 的 scrcpy 进程")
-            else:
+            if not self.process_manager.stop_device_process(device_id, timeout_ms=2000):
                 self.log(f"设备 {device_id} 没有运行中的 scrcpy 进程")
         else:
             self.log(f"设备 {device_id} 没有运行中的 scrcpy 进程")
@@ -1615,33 +1880,7 @@ class ScrcpyUI(QMainWindow):
 
     def _terminate_all_processes(self, timeout_ms=2000):
         """集中终止当前已知的所有QProcess实例"""
-        if hasattr(self, 'device_processes'):
-            for device_id, process in list(self.device_processes.items()):
-                try:
-                    if process and process.state() == QProcess.Running:
-                        print(f"正在终止设备 {device_id} 的进程...")
-                        try:
-                            process.disconnect()
-                        except Exception:
-                            pass
-                        process.kill()
-                        process.waitForFinished(timeout_ms)
-                        print(f"已终止设备 {device_id} 的进程")
-                except Exception as e:
-                    print(f"终止设备 {device_id} 进程时出错: {e}")
-            self.device_processes.clear()
-
-        if hasattr(self, 'process_tracking'):
-            for i, proc in enumerate(self.process_tracking):
-                try:
-                    if proc and proc.state() == QProcess.Running:
-                        proc.disconnect()
-                        proc.kill()
-                        proc.waitForFinished(timeout_ms)
-                        print(f"已终止跟踪进程#{i}")
-                except Exception as e:
-                    print(f"终止跟踪进程 #{i} 时出错: {e}")
-            self.process_tracking.clear()
+        self.process_manager.stop_all_processes(timeout_ms)
 
         if hasattr(self, 'process') and self.process and self.process.state() == QProcess.Running:
             try:
@@ -1649,19 +1888,23 @@ class ScrcpyUI(QMainWindow):
                 self.process.kill()
                 self.process.waitForFinished(timeout_ms)
             except Exception as e:
-                print(f"终止主进程时出错: {e}")
+                console_log(f"终止主进程时出错: {e}", "ERROR")
 
     def handle_process_output(self, process, device_id):
         """处理指定进程的标准输出"""
-        data = process.readAllStandardOutput().data().decode('utf-8')
+        data = decode_process_output(process.readAllStandardOutput())
         if data.strip():
             self.log(f"[{device_id}] {data.strip()}")
             
     def handle_process_error(self, process, device_id):
         """处理指定进程的标准错误"""
-        data = process.readAllStandardError().data().decode('utf-8')
+        data = decode_process_output(process.readAllStandardError())
         if data.strip():
-            self.log(f"[{device_id}] 错误: {data.strip()}")
+            cleaned = data.strip()
+            if self._looks_like_informational_output(cleaned):
+                self.log(f"[{device_id}] {cleaned}")
+            else:
+                self.log(f"[{device_id}] 错误: {cleaned}")
             
     def handle_process_finished(self, device_id):
         """处理进程结束事件"""
@@ -1671,87 +1914,56 @@ class ScrcpyUI(QMainWindow):
             
     def connect_wireless(self):
         """通过无线方式连接设备"""
-        # 检查是否选择了设备
-        if self.device_combo.currentIndex() < 0:
-            QMessageBox.warning(self, "警告", "请先选择一个设备")
-            return
-            
-        # 获取当前选择的设备ID
-        device_id = self.device_combo.currentData()
+        device_id = self._ensure_selected_device_available("WiFi连接")
         if not device_id:
-            QMessageBox.warning(self, "警告", "无效的设备ID")
             return
             
-        # 使用通用进程进行操作
-        temp_process = QProcess()
-        
-        # 先确保设备处于 TCP/IP 模式
-        self.log(f"正在将设备 {device_id} 切换到 TCP/IP 模式...")
-        temp_process.start(self.adb_path, ['-s', device_id, 'tcpip', '5555'])
-        temp_process.waitForFinished()
-        
-        if temp_process.exitCode() != 0:
-            error = temp_process.readAllStandardError().data().decode('utf-8')
-            self.log(f"切换到 TCP/IP 模式失败: {error}")
+        self.wifi_service.connect_device(device_id)
+
+    def disconnect_wireless(self):
+        """断开当前或全部 WiFi 设备连接。"""
+        device_id, entry = self._get_selected_device_entry()
+        targets = []
+        if device_id and entry.get("transport") == "wifi" and entry.get("status") == "device":
+            targets = [device_id]
+        else:
+            targets = [
+                item["device_id"] for item in self.device_status_map.values()
+                if item.get("transport") == "wifi" and item.get("status") == "device"
+            ]
+
+        if not targets:
+            self.show_info_message("提示", "当前没有可断开的 WiFi 设备", show_dialog=True)
             return
-            
-        # 获取设备 IP 地址
-        self.log("正在获取设备 IP 地址...")
-        temp_process.start(self.adb_path, ['-s', device_id, 'shell', 'ip', 'route'])
-        temp_process.waitForFinished()
-        
-        if temp_process.exitCode() != 0:
-            error = temp_process.readAllStandardError().data().decode('utf-8')
-            self.log(f"获取 IP 地址失败: {error}")
-            return
-            
-        output = temp_process.readAllStandardOutput().data().decode('utf-8')
-        ip_address = None
-        
-        # 解析 IP 地址
-        for line in output.strip().split('\n'):
-            if "wlan0" in line and "src" in line:
-                parts = line.split()
-                ip_index = parts.index("src")
-                if ip_index + 1 < len(parts):
-                    ip_address = parts[ip_index + 1]
-                    break
-                    
-        if not ip_address:
-            self.log("无法获取设备 IP 地址，请确保设备已连接到WiFi")
-            return
-            
-        # 等待几秒让设备准备好
-        self.log(f"已找到设备 IP: {ip_address}，等待设备准备就绪...")
-        QTimer.singleShot(2000, lambda: self.do_connect_wireless(ip_address, device_id))
+
+        if len(targets) > 1 and (not device_id or device_id not in targets):
+            reply = self.ask_confirmation(
+                "断开 WiFi 设备",
+                f"检测到 {len(targets)} 个 WiFi 设备，是否全部断开？",
+                default=QMessageBox.Yes,
+            )
+            if reply != QMessageBox.Yes:
+                return
+
+        for target in targets:
+            if target in self.device_processes:
+                self.process_manager.stop_device_process(target, timeout_ms=1500)
+            success, message = self.wifi_service.disconnect_wireless_device(target)
+            if success:
+                self.log(f"已断开 WiFi 设备 {target}: {message.strip()}")
+            else:
+                self.log(f"断开 WiFi 设备 {target} 失败: {message}")
+
+        QTimer.singleShot(500, lambda: self.check_devices(True))
         
     def do_connect_wireless(self, ip_address, original_device_id=None):
         """实际执行无线连接"""
-        # 使用通用进程进行操作
-        temp_process = QProcess()
-        
-        # 连接到设备
-        self.log(f"正在连接到 {ip_address}:5555...")
-        temp_process.start(self.adb_path, ['connect', f"{ip_address}:5555"])
-        temp_process.waitForFinished()
-        
-        output = temp_process.readAllStandardOutput().data().decode('utf-8')
-        if "connected" in output.lower():
-            self.log(f"已成功连接到 {ip_address}:5555")
-            
-            # 刷新设备列表
-            QTimer.singleShot(1000, self.check_devices)
-            
-            # 启动 scrcpy
-            QTimer.singleShot(2000, lambda: self.start_scrcpy_with_ip(ip_address, original_device_id))
-        else:
-            error = temp_process.readAllStandardError().data().decode('utf-8')
-            self.log(f"连接失败: {output} {error}")
+        self.wifi_service.do_connect_wireless(ip_address, original_device_id)
             
     def start_scrcpy_with_ip(self, ip_address, original_device_id=None):
         """使用指定的IP地址启动scrcpy"""
         # 更新设备列表
-        devices = self.controller.get_devices()
+        devices = self.device_service.list_devices()
         wireless_device_id = None
         
         # 查找匹配IP地址的设备
@@ -1771,6 +1983,7 @@ class ScrcpyUI(QMainWindow):
                 if wireless_device_id in self.device_combo.itemText(i):
                     self.device_combo.setCurrentIndex(i)
                     break
+            self.last_connected_device = wireless_device_id
             
             # 启动 scrcpy
             self.start_scrcpy()
@@ -1779,243 +1992,38 @@ class ScrcpyUI(QMainWindow):
             
     def handle_stdout(self):
         """处理标准输出"""
-        data = self.process.readAllStandardOutput().data().decode('utf-8')
+        data = decode_process_output(self.process.readAllStandardOutput())
         if data.strip():
             self.log(data.strip())
             
     def handle_stderr(self):
         """处理标准错误"""
-        data = self.process.readAllStandardError().data().decode('utf-8')
+        data = decode_process_output(self.process.readAllStandardError())
         if data.strip():
-            self.log(f"错误: {data.strip()}")
+            cleaned = data.strip()
+            if self._looks_like_informational_output(cleaned):
+                self.log(cleaned)
+            else:
+                self.log(f"错误: {cleaned}")
+
+    def _looks_like_informational_output(self, text):
+        """判断 stderr 是否更像普通信息而非真正错误。"""
+        text = (text or "").strip()
+        if not text:
+            return False
+        upper = text.upper()
+        if any(keyword in upper for keyword in ["ERROR", "EXCEPTION", "FAILED"]):
+            return False
+        markers = ["INFO:", "[SERVER] INFO:", "file pushed", "Renderer:", "Texture:", "Device:"]
+        return any(marker.lower() in text.lower() for marker in markers)
     
     def take_screenshot(self):
         """截取设备屏幕并保存到电脑"""
-        # 检查是否选择了设备
-        if self.device_combo.currentIndex() < 0:
-            # 如果有多个设备连接但没有选择，询问是否要截图所有设备
-            if len(self.device_processes) > 0:
-                reply = QMessageBox.question(
-                    self, "截取多个设备", "是否要截取所有已连接设备的屏幕？",
-                    QMessageBox.Yes | QMessageBox.No, QMessageBox.No
-                )
-                if reply == QMessageBox.Yes:
-                    self.take_all_screenshots()
-                    return
-            else:
-                QMessageBox.warning(self, "警告", "请先选择一个设备")
-            return
-        
-        # 获取当前选择的设备ID
-        device_id = self.device_combo.currentData()
-        if not device_id:
-            QMessageBox.warning(self, "警告", "无效的设备ID")
-            return
-        
-        # 获取设备型号
-        device_model = self.device_combo.currentText().split(' (')[0]
-        
-        # 打开文件保存对话框
-        import datetime
-        timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
-        default_filename = f"screenshot_{device_model}_{timestamp}.png"
-        
-        filename, _ = QFileDialog.getSaveFileName(
-            self, "保存截图", default_filename, "图片文件 (*.png)"
-        )
-        
-        if not filename:
-            return  # 用户取消了保存操作
-            
-        # 使用控制器获取截图
-        success, message = self.controller.capture_screenshot(device_id, filename)
-        
-        if success:
-            self.log(f"设备 {device_model} ({device_id}) 截图已保存至 {filename}")
-            # 询问是否要查看截图
-            reply = QMessageBox.question(
-                self, "查看截图", "截图已保存，是否立即查看？",
-                QMessageBox.Yes | QMessageBox.No, QMessageBox.No
-            )
-            
-            if reply == QMessageBox.Yes:
-                # 使用系统默认程序打开图片
-                if os.name == 'nt':  # Windows
-                    os.startfile(filename)
-                elif os.name == 'posix':  # Linux/macOS
-                    kwargs = {}
-                    subprocess.run(['xdg-open', filename], check=False, **kwargs)
-        else:
-            self.log(f"截图失败: {message}")
-            
-    def take_all_screenshots(self):
-        """截取所有已连接设备的屏幕"""
-        if not self.device_processes:
-            QMessageBox.warning(self, "警告", "没有连接的设备")
-            return
-            
-        # 询问保存位置
-        save_dir = QFileDialog.getExistingDirectory(self, "选择保存目录", "")
-        if not save_dir:
-            return  # 用户取消了操作
-            
-        import datetime
-        timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
-        
-        success_count = 0
-        for device_id in self.device_processes.keys():
-            # 获取设备信息
-            device_model = "未知设备"
-            for i in range(self.device_combo.count()):
-                if device_id in self.device_combo.itemText(i):
-                    device_model = self.device_combo.itemText(i).split(' (')[0]
-                    break
-                    
-            # 生成文件名
-            filename = os.path.join(save_dir, f"screenshot_{device_model}_{device_id}_{timestamp}.png")
-            
-            # 截图
-            success, message = self.controller.capture_screenshot(device_id, filename)
-            
-            if success:
-                self.log(f"设备 {device_model} ({device_id}) 截图已保存至 {filename}")
-                success_count += 1
-            else:
-                self.log(f"截取设备 {device_model} ({device_id}) 失败: {message}")
-                
-        if success_count > 0:
-            # 询问是否要打开保存目录
-            reply = QMessageBox.question(
-                self, "查看截图", f"成功保存 {success_count} 张截图，是否打开保存目录？",
-                QMessageBox.Yes | QMessageBox.No, QMessageBox.No
-            )
-            
-            if reply == QMessageBox.Yes:
-                # 打开保存目录
-                if os.name == 'nt':  # Windows
-                    os.startfile(save_dir)
-                elif os.name == 'posix':  # Linux/macOS
-                    kwargs = {}
-                    subprocess.run(['xdg-open', save_dir], check=False, **kwargs)
-        
-    def force_screen_sync(self):
-        """强制同步所有屏幕内容"""
-        if not self.sync_control_enabled or not self.main_device_id or not self.controlled_devices:
-            QMessageBox.information(self, "群控未启用", "请先启用群控功能并设置主控和被控设备")
-            return
-            
-        reply = QMessageBox.question(
-            self, 
-            "强制同步屏幕", 
-            "将强制所有被控设备与主控设备的屏幕保持一致。这将执行以下操作:\n\n"
-            "1. 在所有设备上按下HOME键返回主屏幕\n"
-            "2. 点击相同的应用图标\n"
-            "3. 执行相同的操作序列\n\n"
-            "是否继续？",
-            QMessageBox.Yes | QMessageBox.No, 
-            QMessageBox.No
-        )
-        
-        if reply != QMessageBox.Yes:
-            return
-            
-        # 显示进度对话框
-        progress_dialog = QDialog(self)
-        progress_dialog.setWindowTitle("屏幕同步")
-        progress_dialog.setMinimumWidth(400)
-        progress_layout = QVBoxLayout(progress_dialog)
-        
-        progress_label = QLabel("正在同步屏幕...")
-        progress_layout.addWidget(progress_label)
-        
-        # 添加执行步骤
-        step_text = QTextEdit()
-        step_text.setReadOnly(True)
-        step_text.setMaximumHeight(150)
-        progress_layout.addWidget(step_text)
-        
-        # 创建非模态对话框
-        progress_dialog.setModal(False)
-        progress_dialog.show()
-        QApplication.processEvents()
-        
-        step_text.append("1. 在所有设备上按下HOME键...")
-        
-        # 首先在所有设备上按下HOME键
-        for device_id in [self.main_device_id] + self.controlled_devices:
-            self.controller.send_key_event(device_id, 3)  # HOME键
-            QApplication.processEvents()
-            
-        time.sleep(1)
-        step_text.append("完成")
-        
-        # 在主控设备截图，分析主屏幕
-        step_text.append("2. 分析主控设备屏幕...")
-        QApplication.processEvents()
-        
-        # 这里是简化实现，实际应用中需要更复杂的图像分析逻辑
-        # 使用ADB输入事件模拟点击中心位置
-        main_size = self.controller.get_screen_size(self.main_device_id)
-        if not main_size:
-            step_text.append("获取主控设备屏幕尺寸失败")
-            return
-            
-        center_x = main_size[0] // 2
-        center_y = main_size[1] // 2
-        
-        step_text.append(f"3. 在所有设备屏幕中心({center_x}, {center_y})模拟点击...")
-        QApplication.processEvents()
-        
-        # 在所有设备上点击相同的位置
-        for device_id in [self.main_device_id] + self.controlled_devices:
-            # 获取设备尺寸
-            device_size = self.controller.get_screen_size(device_id)
-            if not device_size:
-                step_text.append(f"获取设备 {device_id} 屏幕尺寸失败")
-                continue
-                
-            # 计算设备上的相对位置
-            x = device_size[0] // 2
-            y = device_size[1] // 2
-            
-            # 点击
-            self.controller.send_touch_event(device_id, x, y, "tap")
-            QApplication.processEvents()
-            time.sleep(0.5)
-            
-        step_text.append("4. 同步操作完成")
-        
-        # 添加关闭按钮
-        close_btn = QPushButton("关闭")
-        close_btn.clicked.connect(progress_dialog.accept)
-        progress_layout.addWidget(close_btn)
-        
-        self.log("强制屏幕同步操作已完成")
-        
-    # 添加设备导航按钮的事件处理方法
-    def send_home_key(self):
-        """发送主页键"""
-        pass
-    
-    def send_back_key(self):
-        """发送返回键"""
-        pass
-    
-    def send_menu_key(self):
-        """发送菜单键"""
-        pass
-
-    def find_device_windows(self):
-        """占位函数，已停用"""
-        pass
+        self.screenshot_service.take_screenshot()
 
     def show_about(self):
         """显示关于对话框"""
-        about_text = "Scrcpy GUI\n\n"
-        about_text += "一个基于scrcpy的Android设备镜像和控制工具。\n\n"
-        about_text += "支持多设备连接、WIFI连接、屏幕录制等功能。\n"
-        about_text += "支持截图功能。\n\n"
-        QMessageBox.about(self, "关于Scrcpy GUI", about_text)
+        self.ui_support_service.show_about(self)
 
     def show_app_manager(self):
         """显示应用管理器对话框"""
@@ -2024,134 +2032,8 @@ class ScrcpyUI(QMainWindow):
         if self.device_combo.currentIndex() >= 0:
             device_id = self.device_combo.currentData()
 
-        # 创建应用管理器对话框
-        app_manager = AppManagerDialog(self, self.controller) # 原始调用不传递device_id
-        app_manager.exec_()
+        self.ui_support_service.show_app_manager(self, self.controller, device_id=device_id)
 
-    def connect_all_devices(self):
-        """连接所有检测到的设备"""
-        devices = self.controller.get_devices()
-        if not devices:
-            QMessageBox.warning(self, "警告", "未检测到设备")
-            return
-            
-        # 询问用户是否要先停止所有当前运行的设备进程
-        if self.device_processes:
-            reply = QMessageBox.question(
-                self, "已有设备运行", "是否先停止当前所有设备进程？",
-                QMessageBox.Yes | QMessageBox.No, QMessageBox.Yes
-            )
-            if reply == QMessageBox.Yes:
-                self.stop_scrcpy()  # 停止所有当前设备进程
-        
-        count = 0
-        
-        # 为每个设备启动一个scrcpy进程
-        for device_id, model in devices:
-            # 检查设备是否已经连接
-            if device_id in self.device_processes and self.device_processes[device_id].state() == QProcess.Running:
-                self.log(f"设备 {model} ({device_id}) 已经在运行")
-                continue
-                
-            # 构建命令参数
-            cmd = [self.scrcpy_path]
-            cmd.extend(['-s', device_id])
-            
-            # 添加最大尺寸参数
-            try:
-                maxsize = int(self.maxsize_input.text()) if self.maxsize_input.text() else 1080
-                cmd.extend(['--max-size', str(maxsize)])
-            except ValueError:
-                cmd.extend(['--max-size', '1080'])
-            
-            # 添加比特率参数
-            if self.bitrate_input.text():
-                try:
-                    bitrate = int(self.bitrate_input.text())
-                    cmd.extend(['--video-bit-rate', f'{bitrate}M'])
-                except ValueError:
-                    cmd.extend(['--video-bit-rate', '4M'])
-            
-            # 添加窗口标题，包含设备信息以便识别
-            window_title = f"Scrcpy - {model} ({device_id})"
-            cmd.extend(['--window-title', window_title])
-            
-            # 默认关闭音频，避免不支持音频采集时的崩溃
-            cmd.append('--no-audio')
-
-            # 添加窗口位置参数，避免所有窗口重叠
-            cmd.extend(['--window-x', str(100 + count * 50)])
-            cmd.extend(['--window-y', str(100 + count * 50)])
-            
-            try:
-                # 创建进程
-                process = QProcess()
-                
-                # 确保进程不被过早销毁
-                self.process_tracking.append(process)
-                
-                # 连接信号
-                process.readyReadStandardOutput.connect(lambda proc=process, dev=device_id: self.handle_process_output(proc, dev))
-                process.readyReadStandardError.connect(lambda proc=process, dev=device_id: self.handle_process_error(proc, dev))
-                
-                # 使用新方式连接finished信号
-                process.finished.connect(self.create_process_finished_handler(device_id))
-                
-                # 保存进程
-                self.device_processes[device_id] = process
-                
-                # 启动进程
-                process.start(cmd[0], cmd[1:])
-                self.log(f"已启动设备 {model} ({device_id}) 的 scrcpy 进程")
-                count += 1
-                
-                # 使用相同的递归尝试方法创建控制栏
-                delay_times = [2000, 3500, 5000, 7000, 10000]  # 多个时间点尝试
-                
-                def attempt_create_control_bar(d_id, w_title, attempt_index=0):
-                    """递归尝试创建控制栏，直到成功或达到最大尝试次数"""
-                    if attempt_index >= len(delay_times):
-                        self.log(f"⚠️ 设备 {d_id} 控制栏创建尝试已达最大次数")
-                        return
-                        
-                    success = self.create_control_bar(d_id, w_title)
-                    if not success and attempt_index + 1 < len(delay_times):
-                        # 如果创建失败但还有尝试次数，则延迟后再次尝试
-                        next_delay = delay_times[attempt_index + 1] - delay_times[attempt_index]
-                        self.log(f"设备 {d_id}: 将在 {next_delay/1000} 秒后再次尝试创建控制栏")
-                        QTimer.singleShot(next_delay, partial(attempt_create_control_bar, d_id, w_title, attempt_index + 1))
-                
-                # 启动第一次尝试
-                QTimer.singleShot(delay_times[0], partial(attempt_create_control_bar, device_id, window_title, 0))
-                
-                # 每个设备启动后稍微等待一下，避免系统资源争用
-                if count < len(devices):
-                    time.sleep(1.0)
-                
-            except Exception as e:
-                self.log(f"启动设备 {model} ({device_id}) 失败: {str(e)}")
-                if device_id in self.device_processes:
-                    del self.device_processes[device_id]
-                    
-        if count > 0:
-            self.log(f"成功连接 {count} 个设备")
-
-    # 添加群控相关基本方法
-    def toggle_sync_control(self, state):
-        """开启或关闭同步群控功能"""
-        is_enabled = (state == Qt.Checked)
-        self.sync_control_device_combo.setEnabled(is_enabled)
-        self.sync_control_settings_btn.setEnabled(is_enabled)
-        
-        if is_enabled:
-            self.log("已开启同步群控功能 (注意: 该功能目前尚未完全实现)")
-        else:
-            self.log("已关闭同步群控功能")
-    
-    def show_sync_control_settings(self):
-        """显示群控设置对话框"""
-        QMessageBox.information(self, "群控功能", "同步群控功能目前处于维护中，将在后续版本中恢复完整功能。")
-        self.log("群控功能目前尚未完全实现，敬请期待后续版本")
 
 def parse_arguments():
     """解析命令行参数"""
@@ -2195,26 +2077,8 @@ def main():
         app_font.setPointSize(8)
     QApplication.setFont(app_font)
     
-    # 设置应用程序图标
-    icon_path = ""
-    for path in [
-        "1.ico",                       # 当前目录
-        os.path.join(os.getcwd(), "1.ico"),  # 完整路径
-        os.path.join(os.path.dirname(os.path.abspath(__file__)), "1.ico"),  # 脚本目录
-        os.path.join(os.path.dirname(sys.executable), "1.ico"),  # 可执行文件目录
-    ]:
-        if os.path.exists(path):
-            icon_path = path
-            break
-            
-    if icon_path:
-        try:
-            app_icon = QIcon(icon_path)
-            if not app_icon.isNull():
-                app.setWindowIcon(app_icon)
-                print(f"已设置应用程序图标: {icon_path}")
-        except Exception as e:
-            print(f"应用程序图标设置失败: {e}")
+    ui_support_service = UISupportService()
+    ui_support_service.set_application_icon(app)
     
     # 创建并显示主窗口
     main_window = ScrcpyUI()

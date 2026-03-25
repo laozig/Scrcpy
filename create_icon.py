@@ -6,12 +6,12 @@
 
 from PIL import Image, ImageDraw, ImageFont
 import os
-import sys
 import io
 import base64
-import struct
 import subprocess
 import platform
+
+from utils import console_log
 
 def get_icon_bytes():
     """
@@ -110,7 +110,7 @@ def create_simple_icon(output_path="1.ico"):
                 raise Exception("ICO文件太小或不存在，尝试备用方法")
                 
         except Exception as e:
-            print(f"第一种保存方法失败: {e}")
+            console_log(f"第一种保存方法失败: {e}", "WARN")
             
             try:
                 # 方法2: 仅保存一个尺寸 (32x32) - Windows最常用
@@ -119,22 +119,22 @@ def create_simple_icon(output_path="1.ico"):
                 if not os.path.exists(output_path) or os.path.getsize(output_path) < 100:
                     raise Exception("第二种方法也生成了无效的ICO文件")
             except Exception as e2:
-                print(f"第二种保存方法也失败: {e2}")
+                console_log(f"第二种保存方法也失败: {e2}", "WARN")
                 
                 try:
                     # 方法3: 使用单一最大尺寸
                     largest = images[-1]  # 256x256
                     largest.save(output_path, format='ICO')
                 except Exception as e3:
-                    print(f"所有方法都失败: {e3}")
+                    console_log(f"所有方法都失败: {e3}", "ERROR")
                     return None
         
-        print(f"图标文件已创建: {os.path.abspath(output_path)}")
-        print(f"图标文件大小: {os.path.getsize(output_path)} 字节")
+        console_log(f"图标文件已创建: {os.path.abspath(output_path)}")
+        console_log(f"图标文件大小: {os.path.getsize(output_path)} 字节")
         return os.path.abspath(output_path)
         
     except Exception as e:
-        print(f"创建图标时发生错误: {e}")
+        console_log(f"创建图标时发生错误: {e}", "ERROR")
         return None
 
 def get_icon_base64():
@@ -159,7 +159,7 @@ IDI_ICON1 ICON DISCARDABLE "{icon_path}"
     with open(output_path, 'w') as rc_file:
         rc_file.write(rc_content)
     
-    print(f"已创建资源脚本文件: {os.path.abspath(output_path)}")
+    console_log(f"已创建资源脚本文件: {os.path.abspath(output_path)}")
     return os.path.abspath(output_path)
 
 def set_file_icon(exe_path, icon_path="1.ico"):
@@ -179,12 +179,12 @@ def set_file_icon(exe_path, icon_path="1.ico"):
         
         # 将资源文件附加到exe
         # 这一步通常需要专业的工具，如ResourceHacker等
-        print(f"资源文件已创建: {resource_path}")
-        print(f"请使用ResourceHacker等工具将资源文件手动附加到EXE: {exe_path}")
+        console_log(f"资源文件已创建: {resource_path}")
+        console_log(f"请使用ResourceHacker等工具将资源文件手动附加到EXE: {exe_path}")
         
         return True
     except Exception as e:
-        print(f"设置文件图标属性失败: {e}")
+        console_log(f"设置文件图标属性失败: {e}", "ERROR")
         return False
 
 def create_icon_images(output_path, size=256):
@@ -204,7 +204,7 @@ def create_icon_images(output_path, size=256):
             try:
                 # 尝试加载系统字体
                 font = ImageFont.truetype("arial.ttf", font_size)
-            except:
+            except Exception:
                 try:
                     # 在不同系统上尝试不同的字体
                     if platform.system() == "Windows":
@@ -213,7 +213,7 @@ def create_icon_images(output_path, size=256):
                         font = ImageFont.truetype("AppleGothic.ttf", font_size)
                     else:  # Linux
                         font = ImageFont.truetype("DejaVuSans.ttf", font_size)
-                except:
+                except Exception:
                     # 如果字体加载失败，使用默认字体
                     font = ImageFont.load_default()
             
@@ -226,6 +226,7 @@ def create_icon_images(output_path, size=256):
             draw.text(position, text, fill=(255, 255, 255, 255), font=font)
         except Exception as e:
             # 如果绘制文字失败，绘制一个简单的白色圆圈作为替代
+            console_log(f"绘制图标文字失败，改用圆形占位: {e}", "WARN")
             center = size / 2
             radius = size / 4
             draw.ellipse((center - radius, center - radius, 
@@ -238,18 +239,18 @@ def create_icon_images(output_path, size=256):
         # 保存最终图标
         return image
     except Exception as e:
-        print(f"创建图标时发生错误: {e}")
+        console_log(f"创建图标时发生错误: {e}", "ERROR")
         return None
 
 if __name__ == "__main__":
     # 创建图标文件
     icon_path = create_simple_icon()
     if icon_path:
-        print(f"请将此图标文件用于您的应用程序: {icon_path}")
+        console_log(f"请将此图标文件用于您的应用程序: {icon_path}")
         # 确认图标文件存在
         if os.path.exists(icon_path):
-            print(f"确认图标文件存在，大小: {os.path.getsize(icon_path)} 字节")
+            console_log(f"确认图标文件存在，大小: {os.path.getsize(icon_path)} 字节")
         else:
-            print("错误: 图标文件不存在!")
+            console_log("错误: 图标文件不存在!", "ERROR")
     else:
-        print("创建图标文件失败!") 
+        console_log("创建图标文件失败!", "ERROR")

@@ -8,6 +8,53 @@ import json
 import platform
 from datetime import datetime
 
+
+def decode_process_output(raw_data, encodings=("utf-8", "gbk")):
+    """尽量稳健地把 QProcess/字节输出解码为文本。"""
+    if raw_data is None:
+        return ""
+
+    if hasattr(raw_data, "data"):
+        raw_data = raw_data.data()
+
+    if isinstance(raw_data, str):
+        return raw_data
+
+    if not isinstance(raw_data, (bytes, bytearray)):
+        try:
+            raw_data = bytes(raw_data)
+        except Exception:
+            return str(raw_data)
+
+    for encoding in encodings:
+        try:
+            return raw_data.decode(encoding)
+        except Exception:
+            continue
+    return raw_data.decode("utf-8", errors="ignore")
+
+
+def open_path(path):
+    """跨平台打开文件或目录。"""
+    if not path:
+        return False
+    try:
+        if os.name == "nt":
+            os.startfile(path)
+        elif platform.system() == "Darwin":
+            subprocess.run(["open", path], check=False)
+        else:
+            subprocess.run(["xdg-open", path], check=False)
+        return True
+    except Exception:
+        return False
+
+
+def console_log(message, level="INFO"):
+    """统一控制台日志输出格式，便于排查问题。"""
+    timestamp = datetime.now().strftime("%H:%M:%S")
+    print(f"[{timestamp}] {level}: {message}")
+
 def get_platform_info():
     """获取平台信息"""
     return {

@@ -18,7 +18,7 @@ ADB (Android Debug Bridge) 是一个多功能的命令行工具，用于与 Andr
 
 在开始使用 ADB 传输文件之前，请确保：
 
-1. 已安装 ADB 工具（请参考 [INSTALL.md](INSTALL.md)）
+1. 已安装 ADB 工具（可参考 [README.md](README.md) 或 [使用说明文档.md](使用说明文档.md)）
 2. Android 设备已开启 USB 调试模式
 3. 设备已通过 USB 连接到计算机，或通过 WiFi 连接
 
@@ -140,8 +140,13 @@ adb pull <设备文件路径> <本地文件路径>
 
 ## 与 ScrcpyGUI 的关系
 
-ScrcpyGUI 依赖 ADB 完成设备连接与控制。本指南提供的 ADB 命令可直接用于文件传输与设备管理。
-当前 ScrcpyGUI 不提供专门的“文件传输”界面，建议按本指南使用 `adb push/pull` 完成文件操作。
+ScrcpyGUI 依赖 ADB 完成设备连接、状态检测与部分设备控制。本指南提供的 ADB 命令可直接用于文件传输与设备管理。
+
+当前 ScrcpyGUI 不提供专门的“文件传输”界面，因此：
+- 投屏、截图、录屏、应用管理可以在 GUI 中完成
+- 文件推送/拉取仍建议使用 `adb push` / `adb pull`
+
+如果 ScrcpyGUI 已经能够正确识别到 ADB，则通常命令行中的 ADB 使用也会更顺畅。
 
 ## 常见问题解决
 
