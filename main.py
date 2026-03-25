@@ -32,10 +32,24 @@ from wifi_service import WifiConnectionService
 
 APP_VERSION = "v1.0"
 
+
+def get_app_base_dir():
+    """返回应用运行目录。
+
+    - 开发环境：使用源码文件所在目录
+    - PyInstaller 打包环境：使用 exe 所在目录
+
+    这样可以避免 onedir 模式把配置文件错误读写到 _internal 目录，
+    也避免 onefile 模式读写到临时解压目录。
+    """
+    if getattr(sys, "frozen", False):
+        return os.path.dirname(os.path.abspath(sys.executable))
+    return os.path.dirname(os.path.abspath(__file__))
+
 class ScrcpyUI(QMainWindow):
     def __init__(self):
         super().__init__()
-        self.config_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "scrcpy_config.json")
+        self.config_path = os.path.join(get_app_base_dir(), "scrcpy_config.json")
         self.config_service = ConfigService(self.config_path)
         self.runtime_path_overrides = self.config_service.load_runtime_paths()
         self.adb_resolution = {}
