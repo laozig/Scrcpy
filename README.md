@@ -1,5 +1,9 @@
 # ScrcpyGUI
 
+[![Release](https://img.shields.io/github/v/release/laozig/Scrcpy?label=Release)](https://github.com/laozig/Scrcpy/releases/latest)
+[![Downloads](https://img.shields.io/github/downloads/laozig/Scrcpy/total?label=Downloads)](https://github.com/laozig/Scrcpy/releases/latest)
+[![License](https://img.shields.io/github/license/laozig/Scrcpy)](LICENSE)
+
 **一个面向 Windows 的 Android 投屏与辅助管理图形界面，基于 scrcpy 构建。**
 
 本项目为 `scrcpy` 提供更直观的桌面操作入口，重点解决以下问题：
@@ -15,6 +19,13 @@
 ---
 
 ## 中文
+
+### 最新版本
+
+- 最新发行版：[`v1.0.1`](https://github.com/laozig/Scrcpy/releases/tag/v1.0.1)
+- 下载发布页：<https://github.com/laozig/Scrcpy/releases/latest>
+- 单文件版：[`ScrcpyGUI_v1.0.1.exe`](https://github.com/laozig/Scrcpy/releases/download/v1.0.1/ScrcpyGUI_v1.0.1.exe)
+- 便携版：[`ScrcpyGUI_Portable_v1.0.1.zip`](https://github.com/laozig/Scrcpy/releases/download/v1.0.1/ScrcpyGUI_Portable_v1.0.1.zip)
 
 ### 项目定位
 
@@ -64,6 +75,9 @@ ScrcpyGUI 是一个偏“实用工具型”的桌面应用，核心目标是：
 - 启动、停止、卸载应用
 - 清除数据 / 清缓存
 - 导出 APK
+- 安装 APK / 安装分包 APK
+- 内置 ADB 命令执行页
+- ADB 历史命令与常用命令模板
 - 查看应用详细信息
 
 #### 5. 环境与诊断
@@ -144,12 +158,19 @@ python main.py
 
 ScrcpyGUI is a Windows-oriented GUI wrapper around `scrcpy` for Android screen mirroring and helper workflows.
 
+### Latest release
+
+- Latest version: [`v1.0.1`](https://github.com/laozig/Scrcpy/releases/tag/v1.0.1)
+- Release page: <https://github.com/laozig/Scrcpy/releases/latest>
+- Single-file build: [`ScrcpyGUI_v1.0.1.exe`](https://github.com/laozig/Scrcpy/releases/download/v1.0.1/ScrcpyGUI_v1.0.1.exe)
+- Portable bundle: [`ScrcpyGUI_Portable_v1.0.1.zip`](https://github.com/laozig/Scrcpy/releases/download/v1.0.1/ScrcpyGUI_Portable_v1.0.1.zip)
+
 ### Key capabilities
 - USB / WiFi device connection
 - Screen mirroring with runtime topmost switching
 - Common scrcpy parameter presets and per-device profiles
 - Screenshot and recording workflows
-- App manager (search, filter, start/stop/uninstall, export APK)
+- App manager (search, filter, start/stop/uninstall, export APK, install APK, split APK install, ADB command panel)
 - Environment self-check and diagnosis report
 - Explicit dependency path override for:
   - ADB
