@@ -30,7 +30,7 @@ from ui_support_service import UISupportService
 from utils import console_log, decode_process_output, open_path
 from wifi_service import WifiConnectionService
 
-APP_VERSION = "v1.0"
+APP_VERSION = "v1.0.1"
 
 
 def get_app_base_dir():
@@ -2064,7 +2064,7 @@ def main():
     
     # 显示版本信息
     if args.version:
-        print("Scrcpy GUI v1.0")
+        print("Scrcpy GUI v1.0.1")
         return
 
     # 高DPI自适应（在创建 QApplication 前设置）

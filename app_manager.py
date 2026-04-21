@@ -5,6 +5,7 @@ import sys
 import os
 import hashlib
 import re
+import shlex
 import importlib
 from PyQt5.QtWidgets import (
     QApplication, QDialog, QVBoxLayout, QHBoxLayout, QWidget, 
@@ -327,6 +328,156 @@ class AppActionThread(QThread):
             self.action_result.emit(False, f"操作执行错误: {str(e)}")
 
 
+class DeviceActionThread(QThread):
+    """执行设备级动作，如安装 APK 或执行自定义 ADB 命令。"""
+    action_result = pyqtSignal(str, bool, str)
+
+    GLOBAL_COMMANDS = {
+        "devices",
+        "start-server",
+        "kill-server",
+        "connect",
+        "disconnect",
+        "install",
+        "install-multiple",
+        "version",
+        "help",
+        "host-features",
+        "features",
+        "reconnect",
+    }
+
+    def __init__(self, controller, device_id, action, extra=None):
+        super().__init__()
+        self.controller = controller
+        self.device_id = device_id
+        self.action = action
+        self.extra = extra
+
+    def _normalize_adb_command(self, command):
+        if isinstance(command, str):
+            raw_command = command.strip()
+            if not raw_command:
+                return [], None
+            parts = shlex.split(raw_command)
+        elif isinstance(command, (list, tuple)):
+            parts = [str(part) for part in command if str(part).strip()]
+        else:
+            parts = [str(command).strip()] if str(command).strip() else []
+
+        if parts and os.path.basename(parts[0]).lower() in ("adb", "adb.exe"):
+            parts = parts[1:]
+
+        explicit_device_id = None
+        if len(parts) >= 2 and parts[0] == "-s":
+            explicit_device_id = parts[1]
+            parts = parts[2:]
+
+        return parts, explicit_device_id
+
+    def _resolve_device_for_command(self, command_parts, explicit_device_id=None):
+        if explicit_device_id:
+            return explicit_device_id
+        if not command_parts:
+            return None
+        if command_parts[0].startswith("-"):
+            return None
+        if command_parts[0] in self.GLOBAL_COMMANDS:
+            return None
+        return self.device_id
+
+    def run(self):
+        try:
+            if self.action == "install_apk":
+                apk_path = str(self.extra or "").strip().strip('"')
+                if not apk_path:
+                    self.action_result.emit("install_apk", False, "未选择 APK 文件")
+                    return
+                if not os.path.isfile(apk_path):
+                    self.action_result.emit("install_apk", False, f"APK 文件不存在: {apk_path}")
+                    return
+                if not self.device_id:
+                    self.action_result.emit("install_apk", False, "安装 APK 前请先选择设备")
+                    return
+
+                result = self.controller.execute_adb_command(["install", "-r", apk_path], self.device_id)
+                output = (result[1] or "").strip() or "(无输出)"
+                if result[0]:
+                    self.action_result.emit(
+                        "install_apk",
+                        True,
+                        f"安装 APK 成功: {os.path.basename(apk_path)}\n{output}",
+                    )
+                else:
+                    self.action_result.emit(
+                        "install_apk",
+                        False,
+                        f"安装 APK 失败: {os.path.basename(apk_path)}\n{output}",
+                    )
+                return
+
+            if self.action == "install_multiple_apk":
+                apk_paths = self.extra if isinstance(self.extra, (list, tuple)) else []
+                apk_paths = [str(path).strip().strip('"') for path in apk_paths if str(path).strip()]
+                if not apk_paths:
+                    self.action_result.emit("install_multiple_apk", False, "未选择 APK 文件")
+                    return
+                missing_files = [path for path in apk_paths if not os.path.isfile(path)]
+                if missing_files:
+                    self.action_result.emit(
+                        "install_multiple_apk",
+                        False,
+                        "以下 APK 文件不存在:\n" + "\n".join(missing_files),
+                    )
+                    return
+                if not self.device_id:
+                    self.action_result.emit("install_multiple_apk", False, "安装分包前请先选择设备")
+                    return
+
+                result = self.controller.execute_adb_command(["install-multiple", "-r", *apk_paths], self.device_id)
+                output = (result[1] or "").strip() or "(无输出)"
+                joined_names = ", ".join(os.path.basename(path) for path in apk_paths)
+                if result[0]:
+                    self.action_result.emit(
+                        "install_multiple_apk",
+                        True,
+                        f"安装分包成功({len(apk_paths)} 个): {joined_names}\n{output}",
+                    )
+                else:
+                    self.action_result.emit(
+                        "install_multiple_apk",
+                        False,
+                        f"安装分包失败({len(apk_paths)} 个): {joined_names}\n{output}",
+                    )
+                return
+
+            if self.action == "adb_command":
+                command_parts, explicit_device_id = self._normalize_adb_command(self.extra)
+                if not command_parts:
+                    self.action_result.emit("adb_command", False, "ADB 命令不能为空")
+                    return
+
+                target_device_id = self._resolve_device_for_command(command_parts, explicit_device_id)
+                if target_device_id is None and not explicit_device_id:
+                    if not command_parts[0].startswith("-") and command_parts[0] not in self.GLOBAL_COMMANDS and not self.device_id:
+                        self.action_result.emit("adb_command", False, "当前命令需要先选择设备")
+                        return
+
+                result = self.controller.execute_adb_command(command_parts, target_device_id)
+                output = (result[1] or "").strip() or "(无输出)"
+                shown_adb_name = os.path.basename(getattr(self.controller, "adb_path", "adb") or "adb")
+                prefix = f"$ {shown_adb_name}"
+                if target_device_id:
+                    prefix += f" -s {target_device_id}"
+                prefix += f" {' '.join(command_parts)}"
+                self.action_result.emit("adb_command", bool(result[0]), f"{prefix}\n{output}")
+                return
+
+            self.action_result.emit(self.action, False, f"不支持的设备动作: {self.action}")
+        except Exception as e:
+            self.action_result.emit(self.action, False, f"设备动作执行错误: {e}")
+
+
 class AppManagerDialog(QDialog):
     """应用管理器对话框"""
     def __init__(self, parent, controller, initial_device_id=None):
@@ -342,6 +493,7 @@ class AppManagerDialog(QDialog):
         os.makedirs(os.path.dirname(self.state_path), exist_ok=True)
         self.recent_packages = self._load_recent_packages()  # 保存最近操作/访问的应用
         self.auto_open_export_dir = self._load_auto_open_export_dir()
+        self.adb_command_history = self._load_adb_history()
         self.current_foreground_package = None
         
         self.setWindowTitle("应用管理器")
@@ -363,12 +515,19 @@ class AppManagerDialog(QDialog):
         save_settings({
             "recent_packages": self.recent_packages[:20],
             "auto_open_export_dir": bool(getattr(self, 'auto_open_export_dir_cb', None).isChecked()) if hasattr(self, 'auto_open_export_dir_cb') else self.auto_open_export_dir,
+            "adb_history": self.adb_command_history[:30],
         }, self.state_path)
 
     def _load_auto_open_export_dir(self):
         """加载导出 APK 后自动打开目录配置。"""
         state = load_settings(self.state_path, default={})
         return bool(state.get("auto_open_export_dir", False))
+
+    def _load_adb_history(self):
+        """加载 ADB 命令历史。"""
+        state = load_settings(self.state_path, default={})
+        history = state.get("adb_history", [])
+        return [item for item in history if isinstance(item, str) and item.strip()][:30]
         
     def setup_ui(self):
         """设置UI组件"""
@@ -489,6 +648,11 @@ class AppManagerDialog(QDialog):
         self.export_apk_btn.setEnabled(False)
         extra_action_layout.addWidget(self.export_apk_btn)
 
+        self.install_apk_btn = QPushButton("安装APK")
+        self.install_apk_btn.clicked.connect(self.install_apk_for_device)
+        self.install_apk_btn.setEnabled(False)
+        extra_action_layout.addWidget(self.install_apk_btn)
+
         self.auto_open_export_dir_cb = QCheckBox("导出后打开目录")
         self.auto_open_export_dir_cb.setChecked(self.auto_open_export_dir)
         extra_action_layout.addWidget(self.auto_open_export_dir_cb)
@@ -546,6 +710,90 @@ class AppManagerDialog(QDialog):
         log_layout.addLayout(log_btn_layout)
         
         self.detail_tabs.addTab(log_tab, "操作日志")
+
+        self.adb_tab = QWidget()
+        adb_layout = QVBoxLayout(self.adb_tab)
+
+        adb_path_label = QLabel(f"ADB 路径: {getattr(self.controller, 'adb_path', 'adb')}")
+        adb_path_label.setWordWrap(True)
+        adb_path_label.setTextInteractionFlags(Qt.TextSelectableByMouse)
+        adb_layout.addWidget(adb_path_label)
+
+        adb_hint_label = QLabel(
+            "输入 ADB 子命令即可执行，例如：shell pm list packages -3、shell getprop ro.product.model。"
+            "\n无需输入 adb；普通设备命令会自动附加当前选中的设备，install/connect/devices 等也支持直接执行。"
+        )
+        adb_hint_label.setWordWrap(True)
+        adb_layout.addWidget(adb_hint_label)
+
+        adb_input_layout = QHBoxLayout()
+        self.adb_command_input = QLineEdit()
+        self.adb_command_input.setPlaceholderText("例如: shell pm list packages -3，可使用 {pkg} / {device} 占位符")
+        self.adb_command_input.returnPressed.connect(self.execute_custom_adb_command)
+        adb_input_layout.addWidget(self.adb_command_input, 1)
+
+        self.execute_adb_btn = QPushButton("执行 ADB")
+        self.execute_adb_btn.clicked.connect(self.execute_custom_adb_command)
+        adb_input_layout.addWidget(self.execute_adb_btn)
+        adb_layout.addLayout(adb_input_layout)
+
+        adb_history_layout = QHBoxLayout()
+        adb_history_layout.addWidget(QLabel("历史命令:"))
+        self.adb_history_combo = QComboBox()
+        self.adb_history_combo.setMinimumWidth(260)
+        self._refresh_adb_history_combo()
+        self.adb_history_combo.currentIndexChanged.connect(self._use_selected_adb_history)
+        adb_history_layout.addWidget(self.adb_history_combo, 1)
+
+        self.fill_history_btn = QPushButton("填入")
+        self.fill_history_btn.clicked.connect(self._use_selected_adb_history)
+        adb_history_layout.addWidget(self.fill_history_btn)
+        adb_layout.addLayout(adb_history_layout)
+
+        quick_command_layout = QHBoxLayout()
+        quick_command_layout.addWidget(QLabel("常用命令:"))
+        self.quick_command_combo = QComboBox()
+        self.quick_command_combo.addItem("设备型号", "shell getprop ro.product.model")
+        self.quick_command_combo.addItem("应用路径", "shell pm path {pkg}")
+        self.quick_command_combo.addItem("应用详情", "shell dumpsys package {pkg}")
+        self.quick_command_combo.addItem("打开应用设置页", "shell am start -a android.settings.APPLICATION_DETAILS_SETTINGS -d package:{pkg}")
+        self.quick_command_combo.addItem("强制停止当前应用", "shell am force-stop {pkg}")
+        self.quick_command_combo.addItem("启动当前应用", "shell monkey -p {pkg} -c android.intent.category.LAUNCHER 1")
+        self.quick_command_combo.addItem("查看用户应用列表", "shell pm list packages -3")
+        self.quick_command_combo.addItem("查看前台页面栈", "shell dumpsys activity activities")
+        quick_command_layout.addWidget(self.quick_command_combo, 1)
+
+        self.fill_quick_command_btn = QPushButton("填入常用命令")
+        self.fill_quick_command_btn.clicked.connect(self._fill_quick_adb_command)
+        quick_command_layout.addWidget(self.fill_quick_command_btn)
+
+        self.run_quick_command_btn = QPushButton("执行常用命令")
+        self.run_quick_command_btn.clicked.connect(self._run_quick_adb_command)
+        quick_command_layout.addWidget(self.run_quick_command_btn)
+        adb_layout.addLayout(quick_command_layout)
+
+        adb_action_layout = QHBoxLayout()
+        self.install_apk_tab_btn = QPushButton("安装APK")
+        self.install_apk_tab_btn.clicked.connect(self.install_apk_for_device)
+        self.install_apk_tab_btn.setEnabled(False)
+        adb_action_layout.addWidget(self.install_apk_tab_btn)
+
+        self.install_split_apk_tab_btn = QPushButton("安装分包")
+        self.install_split_apk_tab_btn.clicked.connect(self.install_split_apk_for_device)
+        self.install_split_apk_tab_btn.setEnabled(False)
+        adb_action_layout.addWidget(self.install_split_apk_tab_btn)
+
+        self.clear_adb_output_btn = QPushButton("清空输出")
+        self.clear_adb_output_btn.clicked.connect(lambda: self.adb_output_text.clear())
+        adb_action_layout.addWidget(self.clear_adb_output_btn)
+        adb_action_layout.addStretch(1)
+        adb_layout.addLayout(adb_action_layout)
+
+        self.adb_output_text = QTextEdit()
+        self.adb_output_text.setReadOnly(True)
+        adb_layout.addWidget(self.adb_output_text)
+
+        self.detail_tabs.addTab(self.adb_tab, "ADB 命令")
         
         app_detail_layout.addWidget(self.detail_tabs)
         
@@ -580,6 +828,7 @@ class AppManagerDialog(QDialog):
         self.clear_data_btn.setEnabled(False)
         self.clear_cache_btn.setEnabled(False)
         self.export_apk_btn.setEnabled(False)
+        self._update_device_action_controls()
         
         try:
             devices, selected_device = self.device_service.sync_device_widgets(
@@ -591,6 +840,7 @@ class AppManagerDialog(QDialog):
                 self.log("未检测到设备")
                 return
             self.selected_device = selected_device
+            self._update_device_action_controls()
                 
         except Exception as e:
             self.log(f"刷新设备列表出错: {e}")
@@ -603,17 +853,216 @@ class AppManagerDialog(QDialog):
         if index >= 0:
             self.selected_device = self.device_combo.currentData()
             self.log(f"已选择设备: {self.selected_device}")
+            self._update_device_action_controls()
             
             # 加载应用列表
             self.load_app_list()
         else:
             self.selected_device = None
+            self._update_device_action_controls()
             
     def get_current_device(self):
         """获取当前选择的设备ID"""
         if self.device_combo.currentIndex() >= 0:
             return self.device_combo.currentData()
         return None
+
+    def _update_device_action_controls(self):
+        """更新设备级操作控件状态。"""
+        has_device = bool(self.get_current_device())
+        if hasattr(self, 'install_apk_btn'):
+            self.install_apk_btn.setEnabled(has_device)
+        if hasattr(self, 'install_apk_tab_btn'):
+            self.install_apk_tab_btn.setEnabled(has_device)
+        if hasattr(self, 'install_split_apk_tab_btn'):
+            self.install_split_apk_tab_btn.setEnabled(has_device)
+
+    def _set_device_action_running(self, running):
+        """在设备级动作执行期间锁定相关控件。"""
+        if hasattr(self, 'adb_command_input'):
+            self.adb_command_input.setEnabled(not running)
+        if hasattr(self, 'execute_adb_btn'):
+            self.execute_adb_btn.setEnabled(not running)
+        if hasattr(self, 'clear_adb_output_btn'):
+            self.clear_adb_output_btn.setEnabled(not running)
+        if hasattr(self, 'fill_history_btn'):
+            self.fill_history_btn.setEnabled(not running)
+        if hasattr(self, 'adb_history_combo'):
+            self.adb_history_combo.setEnabled(not running)
+        if hasattr(self, 'quick_command_combo'):
+            self.quick_command_combo.setEnabled(not running)
+        if hasattr(self, 'fill_quick_command_btn'):
+            self.fill_quick_command_btn.setEnabled(not running)
+        if hasattr(self, 'run_quick_command_btn'):
+            self.run_quick_command_btn.setEnabled(not running)
+
+        if running:
+            if hasattr(self, 'install_apk_btn'):
+                self.install_apk_btn.setEnabled(False)
+            if hasattr(self, 'install_apk_tab_btn'):
+                self.install_apk_tab_btn.setEnabled(False)
+            if hasattr(self, 'install_split_apk_tab_btn'):
+                self.install_split_apk_tab_btn.setEnabled(False)
+            return
+
+        self._update_device_action_controls()
+
+    def _refresh_adb_history_combo(self):
+        """刷新 ADB 历史命令下拉框。"""
+        if not hasattr(self, 'adb_history_combo'):
+            return
+        current_text = self.adb_history_combo.currentText() if self.adb_history_combo.count() else ""
+        self.adb_history_combo.blockSignals(True)
+        self.adb_history_combo.clear()
+        self.adb_history_combo.addItem("选择历史命令...")
+        for item in self.adb_command_history:
+            self.adb_history_combo.addItem(item)
+        if current_text:
+            index = self.adb_history_combo.findText(current_text)
+            if index >= 0:
+                self.adb_history_combo.setCurrentIndex(index)
+            else:
+                self.adb_history_combo.setCurrentIndex(0)
+        else:
+            self.adb_history_combo.setCurrentIndex(0)
+        self.adb_history_combo.blockSignals(False)
+
+    def _remember_adb_command(self, command_text):
+        """记录最近执行过的 ADB 命令。"""
+        normalized = (command_text or "").strip()
+        if not normalized:
+            return
+        if normalized in self.adb_command_history:
+            self.adb_command_history.remove(normalized)
+        self.adb_command_history.insert(0, normalized)
+        self.adb_command_history = self.adb_command_history[:30]
+        self._refresh_adb_history_combo()
+        self._save_recent_packages()
+
+    def _use_selected_adb_history(self):
+        """将历史命令填入输入框。"""
+        if not hasattr(self, 'adb_history_combo'):
+            return
+        command_text = self.adb_history_combo.currentText().strip()
+        if not command_text or command_text == "选择历史命令...":
+            return
+        self.adb_command_input.setText(command_text)
+
+    def _fill_quick_adb_command(self):
+        """把常用命令模板填入输入框。"""
+        command_text = str(self.quick_command_combo.currentData() or "").strip()
+        if command_text:
+            self.adb_command_input.setText(command_text)
+
+    def _run_quick_adb_command(self):
+        """直接执行当前选择的常用命令。"""
+        self._fill_quick_adb_command()
+        self.execute_custom_adb_command()
+
+    def _resolve_adb_command_placeholders(self, command_text):
+        """解析 {pkg} / {device} 之类的输入占位符。"""
+        resolved = command_text
+        if "{pkg}" in resolved:
+            if not self.selected_package:
+                return None, "当前命令包含 {pkg}，请先在左侧选择一个应用"
+            resolved = resolved.replace("{pkg}", self.selected_package)
+        if "{device}" in resolved:
+            current_device = self.get_current_device()
+            if not current_device:
+                return None, "当前命令包含 {device}，请先选择设备"
+            resolved = resolved.replace("{device}", current_device)
+        return resolved, None
+
+    def _append_adb_output(self, text):
+        """向 ADB 输出面板追加内容。"""
+        import datetime
+
+        timestamp = datetime.datetime.now().strftime("%H:%M:%S")
+        self.adb_output_text.append(f"[{timestamp}]")
+        self.adb_output_text.append(text)
+        self.adb_output_text.append("")
+        scrollbar = self.adb_output_text.verticalScrollBar()
+        scrollbar.setValue(scrollbar.maximum())
+
+    def _start_device_action(self, action, extra=None):
+        """启动设备级后台任务。"""
+        self._set_device_action_running(True)
+        self.device_action_thread = DeviceActionThread(
+            self.controller,
+            self.get_current_device(),
+            action,
+            extra=extra,
+        )
+        self.device_action_thread.action_result.connect(self.handle_device_action_result)
+        self.device_action_thread.start()
+
+    def install_apk_for_device(self):
+        """为当前设备安装 APK。"""
+        device_id = self.get_current_device()
+        if not device_id:
+            self.log("安装 APK 前请先选择设备")
+            return
+
+        filename, _ = QFileDialog.getOpenFileName(self, "选择 APK 文件", "", "APK 文件 (*.apk);;所有文件 (*)")
+        if not filename:
+            return
+
+        self.detail_tabs.setCurrentWidget(self.adb_tab)
+        self.log(f"准备安装 APK: {filename}")
+        self._append_adb_output(f"准备安装 APK 到设备 {device_id}:\n{filename}")
+        self._start_device_action("install_apk", extra=filename)
+
+    def install_split_apk_for_device(self):
+        """为当前设备安装多 APK 分包。"""
+        device_id = self.get_current_device()
+        if not device_id:
+            self.log("安装分包前请先选择设备")
+            return
+
+        filenames, _ = QFileDialog.getOpenFileNames(self, "选择多个 APK 文件", "", "APK 文件 (*.apk);;所有文件 (*)")
+        if not filenames:
+            return
+
+        self.detail_tabs.setCurrentWidget(self.adb_tab)
+        self.log(f"准备安装分包，共 {len(filenames)} 个 APK")
+        self._append_adb_output(
+            f"准备安装分包到设备 {device_id} (共 {len(filenames)} 个):\n" + "\n".join(filenames)
+        )
+        self._start_device_action("install_multiple_apk", extra=filenames)
+
+    def execute_custom_adb_command(self):
+        """执行用户输入的 ADB 子命令。"""
+        raw_command_text = self.adb_command_input.text().strip()
+        if not raw_command_text:
+            self.log("请输入要执行的 ADB 子命令")
+            return
+
+        command_text, error = self._resolve_adb_command_placeholders(raw_command_text)
+        if error:
+            self.log(error)
+            return
+
+        self.detail_tabs.setCurrentWidget(self.adb_tab)
+        self._remember_adb_command(raw_command_text)
+        self.log(f"正在执行 ADB 命令: {command_text}")
+        self._start_device_action("adb_command", extra=command_text)
+
+    def handle_device_action_result(self, action, success, output):
+        """处理设备级动作结果。"""
+        self._set_device_action_running(False)
+        self._append_adb_output(output)
+
+        if action in {"install_apk", "install_multiple_apk"}:
+            self.log(output.splitlines()[0] if output else "APK 安装完成")
+            if success and self.selected_device:
+                QTimer.singleShot(1200, self.reload_apps)
+            return
+
+        if action == "adb_command":
+            self.log("ADB 命令执行成功" if success else "ADB 命令执行失败")
+            return
+
+        self.log(output)
             
     def load_app_list(self):
         """加载应用列表"""

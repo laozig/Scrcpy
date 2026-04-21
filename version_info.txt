@@ -1,0 +1,31 @@
+VSVersionInfo(
+  ffi=FixedFileInfo(
+    filevers=(1, 0, 1, 0),
+    prodvers=(1, 0, 1, 0),
+    mask=0x3f,
+    flags=0x0,
+    OS=0x40004,
+    fileType=0x1,
+    subtype=0x0,
+    date=(0, 0)
+  ),
+  kids=[
+    StringFileInfo(
+      [
+        StringTable(
+          '080404B0',
+          [
+            StringStruct('CompanyName', 'laozig'),
+            StringStruct('FileDescription', 'Scrcpy GUI - Android设备控制工具'),
+            StringStruct('FileVersion', '1.0.1'),
+            StringStruct('InternalName', 'ScrcpyGUI'),
+            StringStruct('OriginalFilename', 'ScrcpyGUI_v1.0.1.exe'),
+            StringStruct('ProductName', 'ScrcpyGUI'),
+            StringStruct('ProductVersion', '1.0.1')
+          ]
+        )
+      ]
+    ),
+    VarFileInfo([VarStruct('Translation', [2052, 1200])])
+  ]
+)
